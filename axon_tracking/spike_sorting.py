@@ -2,6 +2,7 @@ import os, time, h5py
 import spikeinterface.full as si
 import numpy as np
 from pathlib import Path
+from tqdm import tqdm
 
 def sort_recording_list(path_list, save_path_changes, sorter, sorter_params = dict(), clear_files=True, verbose=True):
     """
@@ -32,7 +33,8 @@ def sort_recording_list(path_list, save_path_changes, sorter, sorter_params = di
     
     sorting_list = []
     
-    for rec_path in path_list:
+    for rec_path in tqdm(path_list, desc="Sorting recordings"):
+        
         h5 = h5py.File(rec_path)
         #Check that all wells are recorded throughout all recordings (should not fail)
         recs = h5['recordings'].keys()
@@ -41,9 +43,11 @@ def sort_recording_list(path_list, save_path_changes, sorter, sorter_params = di
         save_root = convert_rec_path_to_save_path(rec_path, save_path_changes)
         
         for stream_name in list(h5['recordings'][list(recs)[0]]):
-            multirecording =  concatenate_recording_slices(rec_path, stream_name)
-            sorting = clean_sorting(multirecording, save_root, stream_name, sorter, sorter_params, clear_files=clear_files, verbose=verbose)
-            sorting_list.append(sorting)
+            sorter_output_file = Path(os.path.join(save_root, stream_name, 'sorted', 'sorter_output', 'amplitudes.npy'))
+            if not os.path.exists(sorter_output_file):
+                multirecording =  concatenate_recording_slices(rec_path, stream_name)
+                sorting = clean_sorting(multirecording, save_root, stream_name, sorter, sorter_params, clear_files=clear_files, verbose=verbose)
+                sorting_list.append(sorting)
             
     return sorting_list
 
@@ -130,7 +134,7 @@ def concatenate_recording_slices(rec_path, stream_name):
     n_recs, common_el = find_common_electrodes(rec_path, stream_name)
     
     rec_list = []
-    for r in range(2):#(n_recs): 
+    for r in range(n_recs): 
         rec_name = 'rec' + '%0*d' % (4, r)
         rec = si.MaxwellRecordingExtractor(rec_path, stream_name=stream_name, rec_name=rec_name)
                 
@@ -177,13 +181,20 @@ def clean_sorting(rec, save_root, stream_name, sorter, sorter_params = dict(), c
         Specific type depends on the sorter.
     """
     
-    output_folder = Path(os.path.join(save_root, stream_name, 'sorted'))
-
+    output_folder = Path(os.path.join(save_root, stream_name, 'sorted', 'sorter_output'))
+    sorter_output_file = os.path.join(output_folder, 'amplitudes.npy')
+    sorting = []
+    
     # Creates output folder if sorting has not yet been done
-    if not os.path.exists(os.path.join(output_folder,'amplitudes.npy')):
+    if os.path.exists(sorter_output_file):
+        return sorting
+    elif (rec.get_total_duration() < 30): #Arbitrary minimum duration of 30s
+        np.save(sorter_output_file, np.empty(0)) #Empty file to indicate a failed sorting for future loops
+        return sorting
+    else:
         output_folder.mkdir(parents=True, exist_ok=True)
-        raw_file = os.path.join(output_folder, 'sorter_output', 'recording.dat')
-        wh_file = os.path.join(output_folder, 'sorter_output', 'temp_wh.dat')
+        raw_file = os.path.join(output_folder, 'recording.dat')
+        wh_file = os.path.join(output_folder, 'temp_wh.dat')
 
         if verbose:
             print(f"DURATION: {rec.get_num_frames() / rec.get_sampling_frequency()} s -- "
@@ -203,7 +214,6 @@ def clean_sorting(rec, save_root, stream_name, sorter, sorter_params = dict(), c
             if clear_files & os.path.exists(raw_file):
                 os.remove(raw_file)
         except Exception as e:
-            sorting = []
             print(e)
             if clear_files & os.path.exists(wh_file):
                 os.remove(wh_file)
