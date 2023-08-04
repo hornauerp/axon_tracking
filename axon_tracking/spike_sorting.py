@@ -100,17 +100,23 @@ def find_common_electrodes(rec_path, stream_name):
     
     h5 = h5py.File(rec_path)
     n_recs = len(h5['recordings'].keys())
-
+    
+    pos = {'x_pos': np.full([26400], np.nan),
+           'y_pos': np.full([26400], np.nan)}
+    
     for rec_id in range(n_recs):
         rec_name = 'rec' + '%0*d' % (4, rec_id)
         rec = si.MaxwellRecordingExtractor(rec_path, stream_name=stream_name, rec_name=rec_name)
         rec_el = rec.get_property("contact_vector")["electrode"]
+        pos['x_pos'][rec_el[rec_id]] = rec.get_property("contact_vector")["x"]
+        pos['y_pos'][rec_el[rec_id]] = rec.get_property("contact_vector")["y"]
+        
         if rec_id == 0:
             common_el = rec_el
         else:
             common_el = list(set(common_el).intersection(rec_el))
             
-    return n_recs, common_el
+    return n_recs, common_el, pos
 
 
 
@@ -131,7 +137,7 @@ def concatenate_recording_slices(rec_path, stream_name):
         Concatenated recording across common electrodes (spikeinterface object)
     """
 
-    n_recs, common_el = find_common_electrodes(rec_path, stream_name)
+    n_recs, common_el, pos = find_common_electrodes(rec_path, stream_name)
     
     rec_list = []
     for r in range(n_recs): 

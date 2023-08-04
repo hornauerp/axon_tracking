@@ -1,18 +1,66 @@
-import os
+import os, h5py
 import spikeinterface.full as si
 import numpy as np
+from axon_tracking import spike_sorting as ss
 
+
+def extract_templates_from_sorting_dict(sorting_dict, qc_params):
+    rec_list = list(sorting_dict.keys())
+
+    for rec_path in rec_list:
+        sorting_list = sorting_dict[rec_path]
+
+        for sorting_path in sorting_list:
+            sorting = si.KiloSortSortingExtractor(sorting_path)
+            stream_name = [p for p in sorting_path.split('/') if p.startswith('well')][0] #Find out which well this belongs to
+            n_recs, common_el, pos = ss.find_common_electrodes(rec_path, stream_name)
+            multirecording = ss.concatenate_recording_slices(rec_path, stream_name)
+            sorting.register_recording(multirecording)
+            #duration = int(h5['assay']['inputs']['record_time'][0].decode('UTF-8')) * n_recs #In case we want to use firing rate as criterion
+            cleaned_sorting = select_units(sorting, **qc_params)
+            
+    return
+
+def find_successful_sortings(path_list, save_path_changes):
+
+    sorting_dict = dict()
+    for rec_path in path_list:
+        save_root = ss.convert_rec_path_to_save_path(rec_path, save_path_changes)
+        
+        #Takes into account different sorting folder names, subfolder depth, well IDs etc.
+        sorting_files = [root
+                         for root, dirs, files in os.walk(save_root)
+                         for name in files
+                         if name == "templates.npy"]
+        sorting_dict[rec_path] = sorting_files
+        
+    return sorting_dict
+
+            
 def postprocess_sorting():
-
+    #Maybe we will do some postprocessing before we use them
     return
 
 
-def select_units():
+def select_units(sorting, min_n_spikes=50, exclude_mua=True):
+    if exclude_mua:
+        ks_label = sorting.get_property('KSLabel')
+        mua_idx = ks_label == 'mua'
+    else:
+        mua_idx = np.full((sorting.get_num_units(),), False, dtype='bool')
 
-    return
+    
+    n_spikes = [len(sorting.get_unit_spike_train(x)) for x in sorting.get_unit_ids()]
 
+    
+    bad_n_spikes_idx = np.array(n_spikes) < min_n_spikes
+    bad_idx = mua_idx | bad_n_spikes_idx
+    bad_id = [i for i, x in enumerate(bad_idx) if x]
+    
+    cleaned_sorting = sorting.remove_units(bad_id)
+    
+    return cleaned_sorting
 
-def 
 
 
 def extract_waveforms(concatenated_recording, segment_sorting, stream_name, ms_cutout, n_jobs):
