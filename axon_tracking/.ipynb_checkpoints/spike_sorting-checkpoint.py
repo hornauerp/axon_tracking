@@ -37,16 +37,15 @@ def sort_recording_list(path_list, save_path_changes, sorter, sorter_params = di
         
         h5 = h5py.File(rec_path)
         #Check that all wells are recorded throughout all recordings (should not fail)
-        recs = h5['recordings'].keys()
-        assert(h5['recordings'][list(recs)[0]].keys() == h5['recordings'][list(recs)[-1]].keys())
+        stream_ids = list(h5['wells'].keys())
 
         save_root = convert_rec_path_to_save_path(rec_path, save_path_changes)
         
-        for stream_name in list(h5['recordings'][list(recs)[0]]):
-            sorter_output_file = Path(os.path.join(save_root, stream_name, 'sorted', 'sorter_output', 'amplitudes.npy'))
+        for stream_id in stream_ids:
+            sorter_output_file = Path(os.path.join(save_root, stream_id, 'sorter_output', 'amplitudes.npy'))
             if not os.path.exists(sorter_output_file):
-                multirecording =  concatenate_recording_slices(rec_path, stream_name)
-                sorting = clean_sorting(multirecording, save_root, stream_name, sorter, sorter_params, clear_files=clear_files, verbose=verbose)
+                multirecording = concatenate_recording_slices(rec_path, stream_id)
+                sorting = clean_sorting(multirecording, save_root, stream_id, sorter, sorter_params, clear_files=clear_files, verbose=verbose)
                 sorting_list.append(sorting)
             
     return sorting_list
@@ -79,7 +78,7 @@ def convert_rec_path_to_save_path(rec_path, save_path_changes):
     
     return save_path
 
-def find_common_electrodes(rec_path, stream_name):
+def find_common_electrodes(rec_path, stream_id):
     """
     Function that returns the common electrodes of the successive axon scan recordings.
     
@@ -87,11 +86,13 @@ def find_common_electrodes(rec_path, stream_name):
     ----------
     rec_path: str
         Path to the axon scan file.
-    stream_name: str
+    stream_id: str
         Well ID in the format "well***"; Well 1 would be "well001", Well 20 would be "well020"
         
     Returns
     ----------
+    rec_names: list
+        List of rec_names for the specified recording/well.
     common_el: list
         List of electrodes that are present in all axon scan recordings.
     """
@@ -99,28 +100,22 @@ def find_common_electrodes(rec_path, stream_name):
     assert(os.path.exists(rec_path))
     
     h5 = h5py.File(rec_path)
-    n_recs = len(h5['recordings'].keys())
-    
-    pos = {'x_pos': np.full([26400], np.nan),
-           'y_pos': np.full([26400], np.nan)}
-    
-    for rec_id in range(n_recs):
-        rec_name = 'rec' + '%0*d' % (4, rec_id)
-        rec = si.MaxwellRecordingExtractor(rec_path, stream_name=stream_name, rec_name=rec_name)
+    rec_names = list(h5['wells'][stream_id].keys())
+
+    for i, rec_name in enumerate(rec_names):
+        #rec_name = 'rec' + '%0*d' % (4, rec_id)
+        rec = si.MaxwellRecordingExtractor(rec_path, stream_id=stream_id, rec_name=rec_name)
         rec_el = rec.get_property("contact_vector")["electrode"]
-        pos['x_pos'][rec_el[rec_id]] = rec.get_property("contact_vector")["x"]
-        pos['y_pos'][rec_el[rec_id]] = rec.get_property("contact_vector")["y"]
-        
-        if rec_id == 0:
+        if i == 0:
             common_el = rec_el
         else:
             common_el = list(set(common_el).intersection(rec_el))
             
-    return n_recs, common_el, pos
+    return rec_names, common_el
 
 
 
-def concatenate_recording_slices(rec_path, stream_name):
+def concatenate_recording_slices(rec_path, stream_id):
     """
     Function that centers and concatenates the recordings of an axon scan for all common electrodes. 
 
@@ -128,7 +123,7 @@ def concatenate_recording_slices(rec_path, stream_name):
     ----------
     rec_path: str
         Path to the axon scan file.
-    stream_name: str
+    stream_id: str
         Well ID in the format "well***"; Well 1 would be "well001", Well 20 would be "well020"
         
     Returns
@@ -137,29 +132,32 @@ def concatenate_recording_slices(rec_path, stream_name):
         Concatenated recording across common electrodes (spikeinterface object)
     """
 
-    n_recs, common_el, pos = find_common_electrodes(rec_path, stream_name)
-    
-    rec_list = []
-    for r in range(n_recs): 
-        rec_name = 'rec' + '%0*d' % (4, r)
-        rec = si.MaxwellRecordingExtractor(rec_path, stream_name=stream_name, rec_name=rec_name)
-                
-        ch_id = rec.get_property("contact_vector")['device_channel_indices']
-        rec_el = rec.get_property("contact_vector")["electrode"]
+    rec_names, common_el = find_common_electrodes(rec_path, stream_id)
+    if len(rec_names) == 1:
+        rec = si.MaxwellRecordingExtractor(rec_path, stream_id=stream_id, rec_name=rec_names[0])
+        return rec
+    else:
+        rec_list = []
+        for rec_name in rec_names: 
+            #rec_name = 'rec' + '%0*d' % (4, r)
+            rec = si.MaxwellRecordingExtractor(rec_path, stream_id=stream_id, rec_name=rec_name)
+                    
+            ch_id = rec.get_property("contact_vector")['device_channel_indices']
+            rec_el = rec.get_property("contact_vector")["electrode"]
+            
+            chan_idx = [np.where(rec_el == el)[0][0] for el in common_el]
+            sel_channels = rec.get_channel_ids()[chan_idx]
+            chunk_size = np.min([10000, rec.get_num_samples()]) - 100 #Fallback for ultra short recordings (too little activity)
+            rec_centered = si.center(rec,chunk_size=chunk_size)
+            rec_list.append(rec_centered.channel_slice(sel_channels, renamed_channel_ids=list(range(len(chan_idx)))))
         
-        chan_idx = [np.where(rec_el == el)[0][0] for el in common_el]
-        sel_channels = rec.get_channel_ids()[chan_idx]
-        chunk_size = np.min([10000, rec.get_num_samples()]) - 100 #Fallback for ultra short recordings (too little activity?)
-        rec_centered = si.center(rec,chunk_size=chunk_size)
-        rec_list.append(rec_centered.channel_slice(sel_channels, renamed_channel_ids=list(range(len(chan_idx)))))
+        multirecording = si.concatenate_recordings(rec_list)
     
-    multirecording = si.concatenate_recordings(rec_list)
-    
-    return multirecording
+        return multirecording
     
 
 
-def clean_sorting(rec, save_root, stream_name, sorter, sorter_params = dict(), clear_files=True, verbose=True):
+def clean_sorting(rec, save_root, stream_id, sorter, sorter_params = dict(), clear_files=True, verbose=True):
     """
     Function that creates output folder if it does not exist, sorts the recording using the specified sorter
     and clears up large files afterwards. 
@@ -170,7 +168,7 @@ def clean_sorting(rec, save_root, stream_name, sorter, sorter_params = dict(), c
         Recording to be sorted.
     save_root: str
         Root path where the sorted data will be stored. Stream name (i.e. well ID) will be appended.
-    stream_name: str
+    stream_id: str
         Well ID in the format "well***"; Well 1 would be "well001", Well 20 would be "well020"
     sorter: str
         Name of the sorter, as per the spikeinterface convention (e.g. 'kilosort2_5')
@@ -187,20 +185,21 @@ def clean_sorting(rec, save_root, stream_name, sorter, sorter_params = dict(), c
         Specific type depends on the sorter.
     """
     
-    output_folder = Path(os.path.join(save_root, stream_name, 'sorted', 'sorter_output'))
-    sorter_output_file = os.path.join(output_folder, 'amplitudes.npy')
+    output_folder = Path(os.path.join(save_root, stream_id))
+    sorter_output_file = os.path.join(output_folder, 'sorter_output', 'amplitudes.npy')
     sorting = []
-    
     # Creates output folder if sorting has not yet been done
     if os.path.exists(sorter_output_file):
         return sorting
-    elif (rec.get_total_duration() < 30): #Arbitrary minimum duration of 30s
+    elif (rec.get_total_duration() < 30):
+        full_output_folder = Path(os.path.join(output_folder, 'sorter_output'))
+        full_output_folder.mkdir(parents=True, exist_ok=True)
         np.save(sorter_output_file, np.empty(0)) #Empty file to indicate a failed sorting for future loops
         return sorting
     else:
         output_folder.mkdir(parents=True, exist_ok=True)
-        raw_file = os.path.join(output_folder, 'recording.dat')
-        wh_file = os.path.join(output_folder, 'temp_wh.dat')
+        raw_file = os.path.join(output_folder, 'sorter_output', 'recording.dat')
+        wh_file = os.path.join(output_folder, 'sorter_output', 'temp_wh.dat')
 
         if verbose:
             print(f"DURATION: {rec.get_num_frames() / rec.get_sampling_frequency()} s -- "
