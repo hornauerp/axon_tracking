@@ -44,7 +44,7 @@ def sort_recording_list(path_list, save_path_changes, sorter, sorter_params = di
         for stream_id in stream_ids:
             sorter_output_file = Path(os.path.join(save_root, stream_id, 'sorter_output', 'amplitudes.npy'))
             if not os.path.exists(sorter_output_file):
-                multirecording = concatenate_recording_slices(rec_path, stream_id)
+                multirecording, pos = concatenate_recording_slices(rec_path, stream_id)
                 sorting = clean_sorting(multirecording, save_root, stream_id, sorter, sorter_params, clear_files=clear_files, verbose=verbose)
                 sorting_list.append(sorting)
             
@@ -95,23 +95,29 @@ def find_common_electrodes(rec_path, stream_id):
         List of rec_names for the specified recording/well.
     common_el: list
         List of electrodes that are present in all axon scan recordings.
+    pos: dict
+        x, y coordinates of all electrodes 
     """
     
     assert(os.path.exists(rec_path))
     
     h5 = h5py.File(rec_path)
     rec_names = list(h5['wells'][stream_id].keys())
-
+    pos = {'x': np.full([26400], np.nan), 'y': np.full([26400], np.nan)}
+    
     for i, rec_name in enumerate(rec_names):
         #rec_name = 'rec' + '%0*d' % (4, rec_id)
         rec = si.MaxwellRecordingExtractor(rec_path, stream_id=stream_id, rec_name=rec_name)
         rec_el = rec.get_property("contact_vector")["electrode"]
+        pos['x'][rec_el] = rec.get_property("contact_vector")["x"]
+        pos['y'][rec_el] = rec.get_property("contact_vector")["y"]
+        
         if i == 0:
             common_el = rec_el
         else:
             common_el = list(set(common_el).intersection(rec_el))
             
-    return rec_names, common_el
+    return rec_names, common_el, pos
 
 
 
@@ -130,9 +136,11 @@ def concatenate_recording_slices(rec_path, stream_id):
     ----------
     multirecording: ConcatenatedRecordingSlice
         Concatenated recording across common electrodes (spikeinterface object)
+    pos: dict
+        Dictionary with keys 'x' and 'y' containing the coordinates of the MEA electrodes
     """
 
-    rec_names, common_el = find_common_electrodes(rec_path, stream_id)
+    rec_names, common_el, pos = find_common_electrodes(rec_path, stream_id)
     if len(rec_names) == 1:
         rec = si.MaxwellRecordingExtractor(rec_path, stream_id=stream_id, rec_name=rec_names[0])
         return rec
@@ -153,7 +161,7 @@ def concatenate_recording_slices(rec_path, stream_id):
         
         multirecording = si.concatenate_recordings(rec_list)
     
-        return multirecording
+        return multirecording, pos
     
 
 
