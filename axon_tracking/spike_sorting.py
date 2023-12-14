@@ -3,6 +3,7 @@ import spikeinterface.full as si
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
+from glob import glob
 
 def sort_recording_list(path_list, save_path_changes, sorter, sorter_params = dict(), clear_files=True, verbose=True):
     """
@@ -41,10 +42,10 @@ def sort_recording_list(path_list, save_path_changes, sorter, sorter_params = di
 
         save_root = convert_rec_path_to_save_path(rec_path, save_path_changes)
         
-        for stream_id in stream_ids:
+        for stream_id in tqdm(stream_ids, desc="Sorting wells"):
             sorter_output_file = Path(os.path.join(save_root, stream_id, 'sorter_output', 'amplitudes.npy'))
             if not os.path.exists(sorter_output_file):
-                multirecording, pos = concatenate_recording_slices(rec_path, stream_id)
+                multirecording, common_el = concatenate_recording_slices(rec_path, stream_id)
                 sorting = clean_sorting(multirecording, save_root, stream_id, sorter, sorter_params, clear_files=clear_files, verbose=verbose)
                 sorting_list.append(sorting)
             
@@ -95,29 +96,23 @@ def find_common_electrodes(rec_path, stream_id):
         List of rec_names for the specified recording/well.
     common_el: list
         List of electrodes that are present in all axon scan recordings.
-    pos: dict
-        x, y coordinates of all electrodes 
     """
     
     assert(os.path.exists(rec_path))
     
     h5 = h5py.File(rec_path)
     rec_names = list(h5['wells'][stream_id].keys())
-    pos = {'x': np.full([26400], np.nan), 'y': np.full([26400], np.nan)}
-    
+
     for i, rec_name in enumerate(rec_names):
         #rec_name = 'rec' + '%0*d' % (4, rec_id)
         rec = si.MaxwellRecordingExtractor(rec_path, stream_id=stream_id, rec_name=rec_name)
         rec_el = rec.get_property("contact_vector")["electrode"]
-        pos['x'][rec_el] = rec.get_property("contact_vector")["x"]
-        pos['y'][rec_el] = rec.get_property("contact_vector")["y"]
-        
         if i == 0:
             common_el = rec_el
         else:
             common_el = list(set(common_el).intersection(rec_el))
             
-    return rec_names, common_el, pos
+    return rec_names, common_el
 
 
 
@@ -136,11 +131,9 @@ def concatenate_recording_slices(rec_path, stream_id):
     ----------
     multirecording: ConcatenatedRecordingSlice
         Concatenated recording across common electrodes (spikeinterface object)
-    pos: dict
-        Dictionary with keys 'x' and 'y' containing the coordinates of the MEA electrodes
     """
 
-    rec_names, common_el, pos = find_common_electrodes(rec_path, stream_id)
+    rec_names, common_el = find_common_electrodes(rec_path, stream_id)
     if len(rec_names) == 1:
         rec = si.MaxwellRecordingExtractor(rec_path, stream_id=stream_id, rec_name=rec_names[0])
         return rec
@@ -161,7 +154,7 @@ def concatenate_recording_slices(rec_path, stream_id):
         
         multirecording = si.concatenate_recordings(rec_list)
     
-        return multirecording, pos
+        return multirecording, common_el
     
 
 
@@ -235,3 +228,71 @@ def clean_sorting(rec, save_root, stream_id, sorter, sorter_params = dict(), cle
                 
     return sorting
 
+def generate_rec_list(path_parts):
+    """
+    Function that takes a list of strings (path parts) and finds all recordings matching the path pattern, and returns the stream ids for the first recordings.
+
+    Arguments
+    ----------
+    path_parts: List of strings
+        Parts of the path pattern to be concatenated to look for recordings matching the description (when using *wildcard)
+
+    Returns
+    ----------
+    path_list: List of strings
+        List of the recordings matching the pattern provided in path_parts.
+    stream_ids: List of strings
+        List of stream_ids (wells) recorded from the first recording.
+    """
+    path_pattern = os.path.join(*path_parts)
+    path_list  = glob(path_pattern)
+    h5 = h5py.File(path_list[0])
+    stream_ids = list(h5['wells'].keys())
+    path_list.sort()
+    
+    return path_list, stream_ids 
+
+def concatenate_recording_list(path_list, stream_id):
+    well_recording_list = []
+    for rec_path in path_list: #Iterate over recordings to be concatenated
+        try: # If not all wells were recorded, should be the only cause for an error
+            rec = si.MaxwellRecordingExtractor(rec_path,stream_id=stream_id)
+            well_recording_list.append(rec)
+        except Exception:
+            continue
+               
+    if len(well_recording_list) == len(path_list):
+        multirecording = si.concatenate_recordings(well_recording_list)
+    else:
+        raise ValueError('Could not load all recordings!')
+        
+    saturated_count = find_saturated_channels(well_recording_list)
+    clean_multirecording = multirecording.remove_channels(multirecording.get_channel_ids()[saturated_count>0])
+    
+    
+    return multirecording
+
+def find_saturated_channels(rec_list, threshold=0):
+    """
+    Function that creates output folder if it does not exist, sorts the recording using the specified sorter
+    and clears up large files afterwards. 
+
+    Arguments
+    ----------
+    rec_list: List of MaxwellRecordingExtractor objects.
+        List of (potentially to be concatenated) recordings to be checked for saturated channels.
+    threshold: float
+        Maximum ratio of saturated signal for the channel to still be accepted as non-saturated. 
+
+    Returns
+    ----------
+    saturated_count: np.array
+        Number of recordings in which the saturation threshold was crossed (channel was considered to be saturated). Values go from 0 to len(rec_list). 
+    """
+    saturated_count = np.zeros((rec_list[0].get_num_channels()))
+    
+    for i in range(0, len(rec_list)):
+        random_data = si.get_random_data_chunks(rec_list[i], num_chunks_per_segment = int((rec_list[i].get_total_duration()/60)))
+        saturated = (np.sum((random_data == 0).astype("int16") + (random_data == 1023).astype("int16"),axis=0)) / random_data.shape[0]
+        saturated_count += saturated > threshold
+    return saturated_count
