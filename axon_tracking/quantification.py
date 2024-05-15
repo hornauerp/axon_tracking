@@ -69,7 +69,7 @@ def get_longest_path(skeleton):
 def get_projection_dists(skeleton):
     ais = get_ais(skeleton)
     terminals = skeleton.vertices[skeleton.terminals(),:2]
-    dists = cdist(ais,terminals)
+    dists = cdist(ais,terminals) / 1000
     return dists
 
 def get_ais(skeleton):

@@ -23,7 +23,7 @@ def plot_velocity_qc(vels,r2s,fig_size=(6,2)):
 def plot_delay_skeleton(path_list, params, skel_params,figsize=4, plot_ais=True, plot_ais_connection=True, linewidth=2,font_size=24):
     
     #path_list = skel.scale_path_coordinates(path_list)
-    sorted_vertices = skel.path_to_vertices(path_list)
+    sorted_vertices = skel.path_to_vertices(path_list,params)
     c_max = 1000 * (sorted_vertices[-1][2]) / params['sampling_rate']
     fig_ratio = np.ptp(sorted_vertices,axis=0)[0] / np.ptp(sorted_vertices,axis=0)[1] + 0.7
 
@@ -152,8 +152,8 @@ def plot_skeleton(skeleton, x_lim=[], y_lim=[], fig_size=5, marker_size=10,ais=[
     return x,y,z
 
 
-def generate_propagation_gif(template, cumulative=True, vertices = [], downsample=2, clim=[-10, 0], cmap="Greys", spacing=1, marker_size=10):
-    el_offset = 17.5
+def generate_propagation_gif(template, params, cumulative=True, vertices = [], downsample=2, clim=[-10, 0], cmap="Greys", spacing=1, marker_size=10):
+    el_offset = params['el_spacing']
     interp_offset = el_offset*spacing
     xticks = np.arange(0,3850,500)
     yticks = np.arange(0,2200,500)
@@ -161,7 +161,8 @@ def generate_propagation_gif(template, cumulative=True, vertices = [], downsampl
     conv_yticks = yticks/interp_offset
     if len(vertices) > 0:
         x,y,z = [vertices[:,x] for x in range(3)]
-    
+
+    clb_ticks = ['0',str(np.round(max(z)/(params['sampling_rate']/1000),decimals=1))]
     ims = []
     
     fig = plt.figure() #added
@@ -175,8 +176,11 @@ def generate_propagation_gif(template, cumulative=True, vertices = [], downsampl
         ax.imshow(plt_data, animated=True,vmin=clim[0],vmax=clim[1],cmap=cmap) #added
         if len(vertices) > 0:
             xi,yi,zi = x[z<=i], y[z<=i], z[z<=i]
-            ax.scatter(xi,yi,c=zi,s=marker_size,cmap="coolwarm",vmin=np.min(z),vmax=np.max(z))#,alpha=0.5)
-        #clb = plt.colorbar()
+            scat = ax.scatter(xi,yi,c=zi,s=marker_size,cmap="coolwarm",vmin=np.min(z),vmax=np.max(z))#,alpha=0.5)
+        #if i == 1:
+        #    clb = plt.colorbar(scat, ticks=[min(z), max(z)],format=mticker.FixedFormatter(clb_ticks),shrink= 0.5)
+        #    clb.set_label(label="Latency (ms)",size=6)
+        #    clb.ax.tick_params(labelsize=6,length=0)
         ax.set_xticks(conv_xticks)
         ax.set_xticklabels(xticks)
         ax.set_xlabel(u"\u03bcm")
@@ -191,7 +195,7 @@ def generate_propagation_gif(template, cumulative=True, vertices = [], downsampl
 def plot_filled_contour(capped_template,skeleton,params,radius=5,save_path=[], font_size=24):
     interp_tmp = skel.interpolate_template(capped_template,spacing=params['upsample'])
     interp_tmp = nd.gaussian_filter(interp_tmp,sigma=0.8)
-    sorted_vertices = skel.path_to_vertices(skeleton.paths())
+    sorted_vertices = skel.path_to_vertices(skeleton.paths(),params)
     skel_mat = np.zeros(interp_tmp.shape)
     skel_mat[tuple(sorted_vertices.astype('int').T)] = True
     dil_mat = nd.binary_dilation(skel_mat,structure=ball(radius))
@@ -216,7 +220,7 @@ def plot_filled_contour(capped_template,skeleton,params,radius=5,save_path=[], f
 def plot_delay_contour(capped_template,skeleton,params,skel_params, radius=5,save_path=[]):
         interp_tmp = skel.interpolate_template(capped_template,spacing=params['upsample'])
         interp_tmp = nd.gaussian_filter(interp_tmp,sigma=0.8)
-        sorted_vertices = skel.path_to_vertices(skeleton.paths())
+        sorted_vertices = skel.path_to_vertices(skeleton.paths(),params)
         skel_mat = np.zeros(interp_tmp.shape)
         skel_mat[tuple(sorted_vertices.astype('int').T)] = True
         dil_mat = nd.binary_dilation(skel_mat,structure=ball(radius))
@@ -225,7 +229,7 @@ def plot_delay_contour(capped_template,skeleton,params,skel_params, radius=5,sav
         contour_lines = np.append(np.linspace(0.1,2,15),np.linspace(2.5,np.max(contour_data),20))
         #contour_lines = np.geomspace(0.1,np.max(contour_data),15)
     
-        fig, ax = plot_delay_skeleton(skel.unscale_path_coordinates(skeleton.paths()), params, skel_params,figsize=6, plot_ais=False, plot_ais_connection=False, linewidth=4)
+        fig, ax = plot_delay_skeleton(skel.unscale_path_coordinates(skeleton.paths(),params), params, skel_params,figsize=6, plot_ais=False, plot_ais_connection=False, linewidth=4)
         plt.contour(contour_data,levels = contour_lines,colors='k',linewidths = 0.2,alpha=0.8,zorder=0)#,vmax=20,vmin=2)hatches =[':'],
         ax.autoscale_view()
         ax.set_ylim([0,120])

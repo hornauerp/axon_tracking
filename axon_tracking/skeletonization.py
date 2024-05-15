@@ -41,7 +41,7 @@ def full_skeletonization(root_path, stream_id, template_id, params, skel_params,
 
 
 def load_template_file(root_path, stream_id, template_id):
-    template_save_file = os.path.join(root_path, stream_id, 'templates', str(template_id) + '.npy') #'sorter_output', 
+    template_save_file = os.path.join(root_path, stream_id, 'sorter_output', 'templates', str(template_id) + '.npy') #'sorter_output', 
     noise_save_file = os.path.join(root_path, stream_id, 'templates', str(template_id) + '_noise.npy')
     template = np.load(template_save_file).astype('float64')
     if False: #os.path.exists(noise_save_file):
@@ -101,6 +101,15 @@ def threshold_template(template, noise, target_coor, params):
     th_template = noise_th * abs_th * velocity_th
     return th_template
 
+def interp_max(x,spacing):
+    if len(x) == 1:
+        interp_max = spacing
+    elif spacing == 1:
+        interp_max = x[-1] + 1
+    else:
+        interp_max = x[-1]
+    return interp_max
+
 def interpolate_template(template, spacing=[1,1,0.2], template_path = [], overwrite=False):
     if template_path:
         split_path = template_path.split(sep='/')
@@ -114,9 +123,10 @@ def interpolate_template(template, spacing=[1,1,0.2], template_path = [], overwr
 
     else:
         x, y, z = [np.arange(template.shape[k]) for k in range(3)]
-        
         f = RegularGridInterpolator((x, y, z), template)
-        new_grid = np.mgrid[0:x[-1]+1:spacing[0], 0:y[-1]+1:spacing[1], 0:z[-1]:spacing[2]]
+        #new_grid = np.mgrid[0:x[-1]:spacing[0], 0:y[-1]:spacing[1], 0:z[-1]+1:spacing[2]]
+        new_grid = np.mgrid[0:interp_max(x,spacing[0]):spacing[0], 0:interp_max(y,spacing[1]):spacing[1], 0:interp_max(z,spacing[2]):spacing[2]]
+        
         new_grid = np.moveaxis(new_grid, (0, 1, 2, 3), (3, 0, 1, 2))  # reorder axes for evaluation
         interp_template = f(new_grid)
 
@@ -126,8 +136,8 @@ def interpolate_template(template, spacing=[1,1,0.2], template_path = [], overwr
     return interp_template
 
 def valid_latency_map(template, start, params):
-    indices_array = np.indices(template.shape) * 17.5 #convert to (um)
-    distances = np.sqrt((indices_array[0] - start[0]*17.5)**2 + (indices_array[1] - start[1]*17.5)**2) / 1000000 #convert to (s)
+    indices_array = np.indices(template.shape) * params['el_spacing'] #convert to (um)
+    distances = np.sqrt((indices_array[0] - start[0]*params['el_spacing'])**2 + (indices_array[1] - start[1]*params['el_spacing'])**2) / 1000000 #convert to (s)
     th_mat = np.zeros(distances.shape)
     for z in range(distances.shape[2]):
         th_mat[:, :, z] = (params['max_velocity'] / params['sampling_rate']) * (z+2)
@@ -155,7 +165,7 @@ def generate_dilation_structure(max_t, max_r, spacing=1/3, sampling_rate=20000):
     spacing: numeric
         Spacing of the interpolation (if performed before the dilation)
     """
-    el_dist = 17.5 * spacing
+    el_dist = params['el_spacing']
     frame_time = (1000000/sampling_rate) * spacing #Assumes 20k sampling rate
     t = np.ceil(max_t / frame_time).astype('int16')
     r = np.ceil(max_r / el_dist).astype('int16')
@@ -212,7 +222,7 @@ def skeletonize(input_matrix, scale=2, const=50, pdrf_exponent=4, pdrf_scale=100
 
 def perform_path_qc(paths, params, window_size=7, max_duplicate_ratio=0.5, min_r2=0.9, vel_range = [0.4, 1], min_length=10):
     if np.max(np.concatenate(paths)) < 220:
-        scaled_paths = scale_path_coordinates(paths)
+        scaled_paths = scale_path_coordinates(paths,params)
     else:
         scaled_paths = paths
     good_path_list, r2s, vels, lengths = [], [], [], []
@@ -320,17 +330,17 @@ def calculate_path_velocity(path, params):
 
 
     
-def scale_path_coordinates(path_list):
-    scaled_paths = ([np.concatenate((path[:,:2]*17.5, path[:,2:]),axis=1) for path in path_list])
+def scale_path_coordinates(path_list,params):
+    scaled_paths = ([np.concatenate((path[:,:2]*params['el_spacing'], path[:,2:]),axis=1) for path in path_list])
     return scaled_paths
 
-def unscale_path_coordinates(path_list):
-    unscaled_paths = ([np.concatenate((path[:,:2]/17.5, path[:,2:]),axis=1) for path in path_list])
+def unscale_path_coordinates(path_list,params):
+    unscaled_paths = ([np.concatenate((path[:,:2]/params['el_spacing'], path[:,2:]),axis=1) for path in path_list])
     return unscaled_paths
 
-def path_to_vertices(path_list, unscale=True):
+def path_to_vertices(path_list, params, unscale=True):
     if unscale:
-        path_list = unscale_path_coordinates(path_list)
+        path_list = unscale_path_coordinates(path_list, params)
         
     vertices = np.concatenate(path_list)
     sorted_indices = np.argsort(vertices[:, 2])
