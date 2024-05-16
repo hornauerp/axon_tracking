@@ -25,6 +25,31 @@ def extract_templates_from_sorting_dict(sorting_dict, qc_params={}, te_params={}
             cleaned_sorting.register_recording(multirecording)
             segment_sorting = si.SplitSegmentSorting(cleaned_sorting, multirecording)
             extract_all_templates(stream_id, segment_sorting, sorting_path, pos, te_params)
+            
+def extract_templates_from_sorting_list(sorting_list, qc_params={}, te_params={}):
+    """Performs template extraction from a list of sorting paths. Does not require a recording path.
+
+    Args:
+        sorting_list (list): Sorting path list without sorter output suffix.
+        qc_params (dict, optional): Dict of quality control parameters. Defaults to {}.
+        te_params (dict, optional): Dict of template extraction parameters. Defaults to {}.
+    """
+    
+    for sorting_path in sorting_list:
+         output_path = os.path.join(sorting_path,'sorter_output')
+         sorting = si.KiloSortSortingExtractor(output_path)
+         json_path = os.path.join(sorting_path, 'spikeinterface_recording.json')
+         multirecording = si.load_extractor(json_path, base_folder=True)
+         rec_path = ss.get_recording_path(multirecording)
+         stream_id = [p for p in sorting_path.split('/') if p.startswith('well')][0] #Find out which well this belongs to
+            
+         rec_names, common_el, pos = ss.find_common_electrodes(rec_path, stream_id)
+         cleaned_sorting = select_good_units(sorting, **qc_params)
+         cleaned_sorting = si.remove_excess_spikes(cleaned_sorting, multirecording) #Relevant if last spike time == recording_length
+         cleaned_sorting.register_recording(multirecording)
+         segment_sorting = si.SplitSegmentSorting(cleaned_sorting, multirecording)
+         extract_all_templates(stream_id, segment_sorting, sorting_path, pos, te_params)
+    
 
 def extract_templates_from_concatenated_recording(root_path, stream_id, qc_params={}, te_params={}):
 
@@ -32,14 +57,14 @@ def extract_templates_from_concatenated_recording(root_path, stream_id, qc_param
     seg_sorting, concat_rec = ss.split_concatenated_sorting(sorting_path)
         
     # Split axon tracking
-    #ax_sorting = si.select_segment_sorting(seg_sorting,0)
-    #ax_rec_path = ss.get_recording_path(ax_sorting)
-    #ax_recording, common_el, pos = ss.concatenate_recording_slices(ax_rec_path, stream_id, center=False)
+    ax_sorting = si.select_segment_sorting(seg_sorting,0)
+    ax_rec_path = ss.get_recording_path(ax_sorting)
+    ax_recording, common_el, pos = ss.concatenate_recording_slices(ax_rec_path, stream_id, center=False)
     cleaned_sorting = select_good_units(seg_sorting, **qc_params)
-    #ax_sorting = si.select_segment_sorting(cleaned_sorting,0)
-    #ax_sorting = si.remove_excess_spikes(ax_sorting, ax_recording)
-    #ax_sorting.register_recording(ax_recording)
-    #ax_split_sorting = si.SplitSegmentSorting(ax_sorting, ax_recording)
+    ax_sorting = si.select_segment_sorting(cleaned_sorting,0)
+    ax_sorting = si.remove_excess_spikes(ax_sorting, ax_recording)
+    ax_sorting.register_recording(ax_recording)
+    ax_split_sorting = si.SplitSegmentSorting(ax_sorting, ax_recording)
 
     # Split network recordings
     nw_sorting = si.select_segment_sorting(cleaned_sorting,1)
@@ -52,7 +77,7 @@ def extract_templates_from_concatenated_recording(root_path, stream_id, qc_param
     ss.save_split_sorting(nw_split_sorting)
     
     # Extract templates
-    #extract_all_templates(stream_id, ax_split_sorting, sorting_path, pos, te_params)
+    extract_all_templates(stream_id, ax_split_sorting, sorting_path, pos, te_params)
 
 def get_assay_information(rec_path):
     h5 = h5py.File(rec_path)

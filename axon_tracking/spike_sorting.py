@@ -301,7 +301,7 @@ def concatenate_recording_list(path_list, stream_id):
     clean_multirecording = multirecording.remove_channels(multirecording.get_channel_ids()[saturated_count>0])
     
     
-    return multirecording
+    return clean_multirecording
 
 def cut_concatenated_recording(concat_rec, cutout=np.inf):
     rec_list = concat_rec._kwargs['recording_list']
@@ -422,11 +422,16 @@ def get_recording_path(sort_or_rec):
             start_dict = start_dict._kwargs['recording_list']
         else:
             print('Could not find recording path')
+            file_path = []
             break
         try:
             start_dict = start_dict[0]
+            
         except Exception as e:
-            continue
+            try:
+                file_path = start_dict._kwargs['file_path']
+            except Exception:
+                continue
 
-    file_path = start_dict._kwargs['file_path']
+    
     return file_path
