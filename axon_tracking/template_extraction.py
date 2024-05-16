@@ -100,12 +100,11 @@ def select_good_units(sorting, min_n_spikes=1500, exclude_mua=True, use_bc=True)
     else:
         ks_idx = np.full((sorting.get_num_units(),), True, dtype='bool')
 
-    if use_bc:
-        try:
-            bc_idx = sorting.get_property('bc_unitType') == 'GOOD'
-        except Exception as e:
-            print('No bombcell output found')
-            bc_idx = np.full((sorting.get_num_units(),), True, dtype='bool')
+    if use_bc and sorting.get_property('bc_unitType'):
+        bc_idx = sorting.get_property('bc_unitType') == 'GOOD'
+    else:
+        #print('No bombcell output found')
+        bc_idx = np.full((sorting.get_num_units(),), True, dtype='bool')
             
     n_spikes = [len(sorting.get_unit_spike_train(x,segment_index=0)) for x in sorting.get_unit_ids()]
 
