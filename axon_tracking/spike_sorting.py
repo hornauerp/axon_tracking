@@ -45,7 +45,7 @@ def sort_recording_list(path_list, save_path_changes, sorter, sorter_params = di
         for stream_id in tqdm(stream_ids, desc="Sorting wells"):
             sorter_output_file = Path(os.path.join(save_root, stream_id, 'sorter_output', 'amplitudes.npy'))
             if not os.path.exists(sorter_output_file):
-                multirecording, common_el = concatenate_recording_slices(rec_path, stream_id)
+                multirecording, common_el, pos = concatenate_recording_slices(rec_path, stream_id)
                 sorting = clean_sorting(multirecording, save_root, stream_id, sorter, sorter_params, clear_files=clear_files, verbose=verbose)
                 sorting_list.append(sorting)
             
@@ -410,7 +410,9 @@ def get_stream_ids(rec_path):
 def get_recording_path(sort_or_rec):
     start_dict = sort_or_rec
     while 'file_path' not in start_dict._kwargs.keys():
-        if 'sorting' in start_dict._kwargs.keys():
+        if '_recording' in vars(start_dict) and start_dict._recording is not None:
+            start_dict = start_dict._recording
+        elif 'sorting' in start_dict._kwargs.keys():
             start_dict = start_dict._kwargs['sorting']
         elif 'recording' in start_dict._kwargs.keys():
             start_dict = start_dict._kwargs['recording']
@@ -428,10 +430,9 @@ def get_recording_path(sort_or_rec):
             start_dict = start_dict[0]
             
         except Exception as e:
-            try:
-                file_path = start_dict._kwargs['file_path']
-            except Exception:
                 continue
+            
+    file_path = start_dict._kwargs['file_path']
 
     
     return file_path
