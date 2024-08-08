@@ -89,14 +89,24 @@ def get_assay_information(rec_path):
     while pre <= 0 or post <= 0: #some failed axon trackings give negative trigger_post values, so we try different wells
         well_name = list(h5['wells'].keys())[well_id]
         rec_name = list(h5['wells'][well_name].keys())[well_id]
+        sampling_rate = h5['wells'][well_name][rec_name]['settings']['sampling'][0]
         try:
             pre = h5['wells'][well_name][rec_name]['groups']['routed']['trigger_pre'][0]
             post = h5['wells'][well_name][rec_name]['groups']['routed']['trigger_post'][0]
         except:
             break
         well_id += 1
+    
+    cutout_samples = [pre, post]
+    #Workaround to accomodate waveform extraction from network recordings
+    if cutout_samples[0] < 0: 
+        print("Network recording detected, using default [1.5, 5]")
+        cutout_ms = np.array([1.5, 5])
+        cutout_samples = cutout_ms * (sampling_rate/1000)
+    else:
+        cutout_ms = [x / (sampling_rate/1000) for x in cutout_samples] #convert cutout to ms
         
-    return [pre, post]
+    return cutout_samples, cutout_ms
 
 def find_files(save_root, file_name="templates.npy", folder_name="sorter_output"):
     file_list = [root
@@ -132,7 +142,7 @@ def select_good_units(sorting, min_n_spikes=1500, exclude_mua=True, use_bc=True)
     else:
         ks_idx = np.full((sorting.get_num_units(),), True, dtype='bool')
 
-    if use_bc and sorting.get_property('bc_unitType'):
+    if use_bc and len(sorting.get_property('bc_unitType')) > 0:
         bc_idx = sorting.get_property('bc_unitType') == 'GOOD'
     else:
         #print('No bombcell output found')
@@ -175,8 +185,7 @@ def extract_waveforms(segment_sorting, stream_id, save_root, n_jobs, overwrite_w
                                                  allow_unfiltered=True,
                                                  remove_if_exists=True)
             seg_we.set_params(ms_before=cutout[0], ms_after=cutout[1], return_scaled = True, max_spikes_per_unit=10000)
-            seg_we.run_extract_waveforms(n_jobs=n_jobs)
-
+            seg_we.run_extract_waveforms(n_jobs=n_jobs, progress_bar=False)
 
 def align_waveforms(seg_we, sel_unit_id, cutout, ms_peak_cutout, upsample, align_cutout, rm_outliers, n_jobs, n_neighbors):
     
@@ -219,17 +228,11 @@ def remove_wf_outliers(aligned_wfs, ref_el, n_jobs, n_neighbors):
 
 def combine_templates(stream_id, segment_sorting, sel_unit_id, save_root, peak_cutout=2, align_cutout=True, upsample=2, 
                       rm_outliers=True, n_jobs=16, n_neighbors=10, overwrite_wf=False, overwrite_tmp = True, filter_flag = False):
+    
     full_path = ss.get_recording_path(segment_sorting)
-    cutout_samples = get_assay_information(full_path)
-    #Workaround to accomodate waveform extraction from network recordings
-    if cutout_samples[0] < 0: 
-        print("Network recording detected, using default [1.5, 5]")
-        cutout_ms = np.array([1.5, 5])
-        cutout_samples = cutout_ms * (segment_sorting.get_sampling_frequency()/1000)
-    else:
-        cutout_ms = [x / (segment_sorting.get_sampling_frequency()/1000) for x in cutout_samples] #convert cutout to ms
-       
-        
+    cutout_samples, cutout_ms = get_assay_information(full_path)
+    #extract_waveforms(segment_sorting, stream_id, save_root, n_jobs, overwrite_wf, cutout_ms, filter_flag)
+    
     if align_cutout:
         wf_length = np.int16((sum(cutout_samples) - 2*peak_cutout) * upsample) #length of waveforms after adjusting for potential peak alignments
         
@@ -237,10 +240,8 @@ def combine_templates(stream_id, segment_sorting, sel_unit_id, save_root, peak_c
         wf_length = np.int16(sum(cutout_samples) * upsample)
         
     template_matrix = np.full([wf_length, 26400], np.nan)
-    noise_levels = np.full([1,26400], np.nan)
-        
-    extract_waveforms(segment_sorting, stream_id, save_root, n_jobs, overwrite_wf, cutout_ms, filter_flag)
-
+    #noise_levels = np.full([1,26400], np.nan)
+    
     h5 = h5py.File(full_path)
     rec_names = list(h5['wells'][stream_id].keys())
     
@@ -251,9 +252,9 @@ def combine_templates(stream_id, segment_sorting, sel_unit_id, save_root, peak_c
         seg_we = si.load_waveforms(os.path.join(save_root, 'waveforms', 'seg' + str(sel_idx)), sorting = seg_sort)
         aligned_wfs = align_waveforms(seg_we, sel_unit_id, cutout_samples, peak_cutout, upsample, align_cutout, rm_outliers, n_jobs, n_neighbors)
         template_matrix[:,els] = aligned_wfs #find way to average common electrodes 
-        noise_levels[:,els] = si.compute_noise_levels(seg_we)
+        #noise_levels[:,els] = si.compute_noise_levels(seg_we)
     
-    return template_matrix, noise_levels
+    return template_matrix#, noise_levels
 
 def convert_to_grid(template_matrix, pos):
     clean_template = np.delete(template_matrix, np.isnan(pos['x']), axis = 1)
@@ -273,18 +274,22 @@ def extract_all_templates(stream_id, segment_sorting, save_root, pos, te_params)
     template_save_path = os.path.join(save_root, 'templates')
     if not os.path.exists(template_save_path):
         os.makedirs(template_save_path)
-        
+
+    full_path = ss.get_recording_path(segment_sorting)
+    cutout_samples, cutout_ms = get_assay_information(full_path)
+    extract_waveforms(segment_sorting, stream_id, save_root, te_params['n_jobs'], te_params['overwrite_wf'], cutout_ms, te_params['filter_flag'])
+    
     for sel_unit_id in tqdm(sel_unit_ids): 
         template_save_file = os.path.join(template_save_path, str(sel_unit_id) + '.npy')
-        noise_save_file = os.path.join(template_save_path, str(sel_unit_id) + '_noise.npy')
+        #noise_save_file = os.path.join(template_save_path, str(sel_unit_id) + '_noise.npy')
         
         if not os.path.isfile(template_save_file) or te_params['overwrite_tmp']:
             try:
-                template_matrix, noise_levels = combine_templates(stream_id, segment_sorting, sel_unit_id, save_root, **te_params)
+                template_matrix = combine_templates(stream_id, segment_sorting, sel_unit_id, save_root, **te_params)
                 grid = convert_to_grid(template_matrix, pos)
                 np.save(template_save_file, grid)
-                noise_levels = convert_to_grid(noise_levels, pos)
-                np.save(noise_save_file, noise_levels)
+                #noise_levels = convert_to_grid(noise_levels, pos)
+                #np.save(noise_save_file, noise_levels)
                 
             except Exception as e:
                 print(f'Unit {sel_unit_id} encountered the following error:\n {e}')

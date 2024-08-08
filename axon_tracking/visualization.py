@@ -19,6 +19,30 @@ def plot_velocity_qc(vels,r2s,fig_size=(6,2)):
     plt.title('R2')
     plt.show()
     
+def plot_bare_skeleton(path_list, params, save_path = [], figsize=4, linewidth=2, cmap='copper'):
+    sorted_vertices = skel.path_to_vertices(path_list,params)
+    c_max = 1000 * (sorted_vertices[-1][2]) / params['sampling_rate']
+
+    fig, ax = plt.subplots(figsize=(22*figsize,12*figsize),constrained_layout=True)
+    for path in path_list:
+        x = path[:,0]
+        y = path[:,1]
+        cols = (path[:,2])/params['sampling_rate'] * 1000
+        points = np.array([x, y]).T.reshape(-1, 1, 2)
+        segments = np.concatenate([points[:-1], points[1:]], axis=1)
+        lc = LineCollection(segments, cmap=cmap,linewidths=linewidth)
+        lc.set_array(cols)
+        lc.set_clim((0, np.ceil(c_max)))
+        
+        line = ax.add_collection(lc)
+    ax.set_xlim([0, 440])
+    ax.set_ylim([240,0])
+    ax.axis('off')
+    if save_path:
+        plt.savefig(save_path,dpi=300, transparent=True)
+        plt.close()
+    #plt.show()
+    return fig, ax
 
 def plot_delay_skeleton(path_list, params, skel_params,figsize=4, plot_ais=True, plot_ais_connection=True, linewidth=2,font_size=24):
     
@@ -27,7 +51,7 @@ def plot_delay_skeleton(path_list, params, skel_params,figsize=4, plot_ais=True,
     c_max = 1000 * (sorted_vertices[-1][2]) / params['sampling_rate']
     fig_ratio = np.ptp(sorted_vertices,axis=0)[0] / np.ptp(sorted_vertices,axis=0)[1] + 0.7
 
-    fig, ax = plt.subplots(figsize=(22,12),constrained_layout=True)
+    fig, ax = plt.subplots(figsize=(22*figsize,12*figsize),constrained_layout=True)
     for path in path_list:
         x = path[:,0]
         y = path[:,1]
@@ -41,8 +65,8 @@ def plot_delay_skeleton(path_list, params, skel_params,figsize=4, plot_ais=True,
         line = ax.add_collection(lc)
         
     clb = fig.colorbar(line,ax=ax,ticks=[0, np.ceil(c_max)],shrink= 0.3)#,format=mticker.FixedFormatter(clb_ticks)
-    clb.set_label(label="Delay (ms)",size=font_size)
-    clb.ax.tick_params(labelsize=font_size,length=0)
+    clb.set_label(label="Delay (ms)",size=font_size*figsize)
+    clb.ax.tick_params(labelsize=font_size*figsize,length=0)
     if plot_ais:
         plt.scatter(skel_params['ais'][0][0],skel_params['ais'][0][1],s=50,color='k',zorder=10)
 
@@ -229,7 +253,7 @@ def plot_delay_contour(capped_template,skeleton,params,skel_params, radius=5,sav
         contour_lines = np.append(np.linspace(0.1,2,15),np.linspace(2.5,np.max(contour_data),20))
         #contour_lines = np.geomspace(0.1,np.max(contour_data),15)
     
-        fig, ax = plot_delay_skeleton(skel.unscale_path_coordinates(skeleton.paths(),params), params, skel_params,figsize=6, plot_ais=False, plot_ais_connection=False, linewidth=4)
+        fig, ax = plot_delay_skeleton(skel.unscale_path_coordinates(skeleton.paths(),params), params, skel_params,figsize=1, plot_ais=False, plot_ais_connection=False, linewidth=4)
         plt.contour(contour_data,levels = contour_lines,colors='k',linewidths = 0.2,alpha=0.8,zorder=0)#,vmax=20,vmin=2)hatches =[':'],
         ax.autoscale_view()
         ax.set_ylim([0,120])
