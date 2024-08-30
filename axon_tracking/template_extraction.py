@@ -136,7 +136,7 @@ def postprocess_sorting():
     #Maybe we will do some postprocessing before we use them
     return
 
-def select_good_units(sorting, min_n_spikes=1500, exclude_mua=True, use_bc=True):
+def select_good_units(sorting, min_n_spikes=1500, exclude_mua=True, use_bc=False):
     if exclude_mua:
         ks_idx = sorting.get_property('KSLabel') == 'good'
     else:

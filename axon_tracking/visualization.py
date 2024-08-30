@@ -216,7 +216,7 @@ def generate_propagation_gif(template, params, cumulative=True, vertices = [], d
     ani = anim.ArtistAnimation(fig, ims,interval=100)
     return ani
 
-def plot_filled_contour(capped_template,skeleton,params,radius=5,save_path=[], font_size=24):
+def plot_filled_contour(capped_template,skeleton,params,radius=5,save_path=[], fig_size = 1, font_size=24):
     interp_tmp = skel.interpolate_template(capped_template,spacing=params['upsample'])
     interp_tmp = nd.gaussian_filter(interp_tmp,sigma=0.8)
     sorted_vertices = skel.path_to_vertices(skeleton.paths(),params)
@@ -225,18 +225,18 @@ def plot_filled_contour(capped_template,skeleton,params,radius=5,save_path=[], f
     dil_mat = nd.binary_dilation(skel_mat,structure=ball(radius))
     th_data = (interp_tmp * dil_mat)#[:,:,t_cap[0]:t_cap[1]]
     contour_data = np.abs(np.min(th_data,axis=2).T)
-    contourf_lines = np.append(np.floor(-np.max(contour_data)),np.linspace(-2, -0.1,15))
+    contourf_lines = np.append(np.floor(-np.max(contour_data)),np.linspace(-5, -0.1,15))
     #contourf_lines = np.append(np.geomspace(-np.max(contour_data),-3,10),np.linspace(-3, -0.1,15))
-    fig, ax = plt.subplots(figsize=(22,12),constrained_layout=True)
-    plt.contourf(-contour_data,levels = contourf_lines,cmap="inferno",vmin=-2,vmax=-0.1)# ,linewidths = 0.2,vmax=20,vmin=2)hatches =[':'],
-    clb = plt.colorbar(ticks=[-np.max(contour_data), -0.1],format=mticker.FixedFormatter(['-40','-2']),shrink= 0.3)
-    clb.set_label(label=u"\u03bcV/ms",size=24)
-    clb.ax.tick_params(labelsize=24,length=0) 
+    fig, ax = plt.subplots(figsize=(22*fig_size,12*fig_size),constrained_layout=True)
+    plt.contourf(-contour_data,levels = contourf_lines,cmap="inferno",vmin=-5,vmax=-0.1)# ,linewidths = 0.2,vmax=20,vmin=2)hatches =[':'],
+    clb = plt.colorbar(ticks=[-np.max(contour_data), -0.1],format=mticker.FixedFormatter(['-100','-2']),shrink= 0.3)
+    clb.set_label(label=u"\u03bcV/ms",size=font_size)
+    clb.ax.tick_params(labelsize=font_size,length=0) 
     ax.autoscale_view()
     ax.set_ylim(ax.get_ylim()[::-1])
     ax.axis('off')
     if save_path:
-        plt.savefig(save_path,dpi=300)
+        plt.savefig(save_path,dpi=300, transparent=True)
         plt.close()
     else:
         plt.show()
@@ -260,7 +260,7 @@ def plot_delay_contour(capped_template,skeleton,params,skel_params, radius=5,sav
         ax.set_ylim(ax.get_ylim()[::-1])
         ax.axis('off')
         if save_path:
-            plt.savefig(save_path,dpi=300)
+            plt.savefig(save_path,dpi=300, transparent=True)
             plt.close()
         else:
             plt.show()
