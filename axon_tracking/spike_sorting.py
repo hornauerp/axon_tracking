@@ -344,20 +344,37 @@ def split_concatenated_sorting(sorting_path, path_suffix='sorter_output'):
     
     return segment_sorting, concat_rec
 
-def save_split_sorting(seg_sorting, subfolder='segment_', keep_unit_ids=None, cutout=np.inf):
+def save_split_sorting(seg_sorting, subfolder='segment_', keep_unit_ids=None, cutout=[0, np.inf]):
+    """Saves the split sorting into subfolders for each segment in the phy format.
+
+    Args:
+        seg_sorting (SegmentSorting): Spikeinterface SegmentSorting object.
+        subfolder (str, optional): Prefix of the subfolders. Defaults to 'segment_'.
+        keep_unit_ids (list, optional): List of unit ids to be kept, e.g., as a QC result. Defaults to None, which uses all units.
+        cutout (list or np.array, optional): Cutout in seconds to be kept (relevant for wash-in artefacts). Can be 2D if different cutouts should be used. Defaults to [0, np.inf], which uses the entire duration for each segment.
+    """
+    if len(cutout.shape) == 1: #If only one cutout is provided, we assume it applies to all segments
+        cutout = np.tile(cutout, (seg_sorting.get_num_segments(),1))
     N_segments = seg_sorting.get_num_segments()
     if len(seg_sorting.get_unit_ids()) > 0:
         for seg_id in range(N_segments):
             seg = si.SelectSegmentSorting(seg_sorting, seg_id)
             if keep_unit_ids is not None:
-                seg = seg.select_units(keep_unit_ids) # ,renamed_unit_ids=list(range(len(keep_unit_ids)))
+                seg = seg.select_units(np.squeeze(keep_unit_ids).tolist()) # ,renamed_unit_ids=list(range(len(keep_unit_ids)))
     
             spikes = seg.to_spike_vector()
-            duration = np.ceil(spikes['sample_index'].max()/seg.get_sampling_frequency())
+            #duration = np.ceil(spikes['sample_index'].max()/seg.get_sampling_frequency())
             
-            if cutout < duration:
-                end_frame = spikes['sample_index'].max() + 1
-                start_frame = end_frame - cutout * seg.get_sampling_frequency()
+            if cutout[seg_id][0] == 0 and cutout[seg_id][1] == np.inf:
+                pass
+            else:
+                if cutout[seg_id][1] == np.inf:
+                    end_frame = spikes['sample_index'].max() + 1
+                else:
+                    end_frame = cutout[seg_id][1] * seg.get_sampling_frequency()
+                    
+                start_frame = cutout[seg_id][0] * seg.get_sampling_frequency()
+                    
                 seg = seg.frame_slice(start_frame, end_frame)
                 
             #spike_vector = seg.to_spike_vector(concatenated=True) #Removes original unit IDs
