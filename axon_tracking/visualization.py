@@ -118,7 +118,7 @@ def plot_template_overview(root_path, stream_id, params, n_cols = 3, vmin=-10,vm
         from IPython.display import display, Image
         display(Image(filename=full_filename))
     else:
-        parent_dir = os.path.join(root_path,stream_id,'templates')
+        parent_dir = os.path.join(root_path,stream_id,'sorter_output/templates')
         files = os.listdir(parent_dir)
         template_files = [f for f in files if '_' not in f]
         ids = [float(t.split('.')[0]) for t in template_files]
@@ -131,7 +131,7 @@ def plot_template_overview(root_path, stream_id, params, n_cols = 3, vmin=-10,vm
         n_rows = int(np.ceil(len(template_files) / n_cols))
         fig, axes = plt.subplots(n_rows,n_cols,figsize=(14,3*n_rows))
         for i, template_file in enumerate(template_files):
-            template_path = os.path.join(root_path,stream_id,'templates',template_file)
+            template_path = os.path.join(root_path,stream_id,'sorter_output/templates',template_file)
             template = np.load(template_path)
             temp_diff = np.diff(template)
         
