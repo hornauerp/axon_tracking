@@ -1,12 +1,15 @@
 import os
-import scipy.ndimage as nd
-import numpy as np
-import matplotlib.pyplot as plt
+
 import matplotlib.animation as anim
+import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
-from axon_tracking import skeletonization as skel
-from skimage.morphology import ball
+import numpy as np
+import scipy.ndimage as nd
+from IPython.display import Image, display
 from matplotlib.collections import LineCollection
+from skimage.morphology import ball
+
+from axon_tracking import skeletonization as skel
 
 
 def plot_velocity_qc(vels, r2s, fig_size=(6, 2)):
@@ -146,26 +149,21 @@ def plot_template_and_noise(template, noise, th_template):
 
 def plot_template_overview(
     root_path,
-    stream_id,
-    params,
     n_cols=3,
     vmin=-10,
     vmax=0,
     filename="overview",
-    unit_ids=[],
+    unit_ids=None,
     overwrite=False,
 ):
-    full_filename = os.path.join(root_path, stream_id, filename + ".png")
+    full_filename = os.path.join(root_path, filename + ".png")
     if os.path.exists(full_filename) and not overwrite:
-        from IPython.display import display, Image
-
         display(Image(filename=full_filename))
     else:
-        parent_dir = os.path.join(root_path, stream_id, "sorter_output/templates")
-        files = os.listdir(parent_dir)
+        files = os.listdir(root_path)
         template_files = [f for f in files if "_" not in f]
         ids = [float(t.split(".")[0]) for t in template_files]
-        if len(unit_ids) > 0:
+        if unit_ids is not None:
             sort_idx = [ids.index(x) for x in unit_ids]
         else:
             sort_idx = np.argsort(ids)
@@ -174,18 +172,10 @@ def plot_template_overview(
         n_rows = int(np.ceil(len(template_files) / n_cols))
         fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, 3 * n_rows))
         for i, template_file in enumerate(template_files):
-            template_path = os.path.join(
-                root_path, stream_id, "sorter_output/templates", template_file
-            )
+            template_path = os.path.join(root_path, template_file)
             template = np.load(template_path)
             temp_diff = np.diff(template)
-
-            capped_template, target_coor = skel.localize_neurons(
-                temp_diff, ms_cutout=params["ms_cutout"]
-            )
-            tmp_filt = nd.median_filter(
-                capped_template, footprint=params["filter_footprint"]
-            )
+            tmp_filt = nd.gaussian_filter(temp_diff, sigma=1)
             plt.subplot(n_rows, n_cols, i + 1)
             plt.imshow(np.min(tmp_filt, axis=2).T, vmin=vmin, vmax=vmax)
             plt.title(template_file)
