@@ -202,7 +202,13 @@ def extract_templates(recording, sorting, te_params, cutout_ms):
         A numpy array containing the extracted templates.
     """
 
-    rec_centered = si.filter(recording, band=te_params["filter_band"])
+    # Filter recording
+    if isinstance(te_params["filter_band"], list):
+        btype = "bandpass"
+    else:
+        btype = "highpass"
+
+    rec_centered = si.filter(recording, btype=btype, band=te_params["filter_band"])
 
     sorting = si.remove_excess_spikes(sorting, rec_centered)
     sorting.register_recording(rec_centered)
