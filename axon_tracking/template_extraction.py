@@ -38,7 +38,7 @@ def extract_templates_from_sorting_list(sorting_list, qc_params={}, te_params={}
         qc_params (dict, optional): Dict of quality control parameters. Defaults to {}.
         te_params (dict, optional): Dict of template extraction parameters. Defaults to {}.
     """
-
+    si.set_global_job_kwargs(n_jobs=te_params["n_jobs"], progress_bar=False)
     for sorting_path in tqdm(sorting_list):
         if os.path.isdir(
             os.path.join(sorting_path, "templates")
@@ -57,16 +57,16 @@ def extract_templates_from_sorting_list(sorting_list, qc_params={}, te_params={}
             save_individual_templates(template_matrix, save_folder, unit_ids, pos)
 
         except Exception as e:
-            print(e)
+            print(f"Error: {e}")
             continue
 
 
-def preprocess_sorting(sorting_path, qc_params={}):
+def preprocess_sorting(sorting_path, qc_params):
     """Performs QC and splitting of a sorting object.
 
     Args:
         sorting_path (str): Path to the folder containing the sorting output.
-        qc_params (dict, optional): QC dictionary. Defaults to {}.
+        qc_params (dict, optional): QC parameter dictionary.
 
     Returns:
         segment_sorting (SegmentSorting): Sorting that was split according to the
@@ -84,7 +84,7 @@ def preprocess_sorting(sorting_path, qc_params={}):
     multirecording = si.load_extractor(json_path, base_folder=True)
 
     # Clean sorting (perform quality control)
-    cleaned_sorting = select_good_units(sorting, qc_params)
+    cleaned_sorting = select_good_units(sorting, multirecording, qc_params)
     cleaned_sorting = si.remove_excess_spikes(
         cleaned_sorting, multirecording
     )  # Relevant if last spike time == recording_length
@@ -96,7 +96,45 @@ def preprocess_sorting(sorting_path, qc_params={}):
     return segment_sorting
 
 
-def select_good_units(sorting, qc_params):
+def perform_si_qc(sorting, recording, qc_params):
+    """Performs quality control on a sorting object using spikeinterface metrics.
+
+    Args:
+        sorting (BaseSorting): Sorting extractor object.
+        qc_params (dict): Dict of quality control parameters.
+
+    Returns:
+        BaseSorting: Sorting object with units that passed the QC.
+    """
+    full_analyzer = si.create_sorting_analyzer(sorting=sorting, recording=recording)
+
+    full_analyzer.compute(
+        [
+            "random_spikes",
+            "waveforms",
+            "templates",
+            "spike_amplitudes",
+            "unit_locations",
+            "template_similarity",
+            "correlograms",
+        ]
+    )
+
+    if qc_params["auto_merge"]:
+        merge_unit_groups = si.get_potential_auto_merge(
+            full_analyzer, resolve_graph=True
+        )
+        full_analyzer = full_analyzer.merge_units(merge_unit_groups=merge_unit_groups)
+
+    if qc_params["remove_redundant"]:
+        sorting = si.remove_redundant_units(
+            full_analyzer, duplicate_threshold=0.8, remove_strategy="minimum_shift"
+        )
+
+    return sorting
+
+
+def select_good_units(sorting, recording, qc_params):
     """Selects good units based on quality control parameters from KS and BC.
 
     Args:
@@ -133,6 +171,9 @@ def select_good_units(sorting, qc_params):
     good_ids = sorting.get_unit_ids()[good_idx]
     cleaned_sorting = sorting.select_units(good_ids)
 
+    if qc_params["use_si"]:
+        cleaned_sorting = perform_si_qc(cleaned_sorting, recording, qc_params)
+
     print(f"Keeping {len(good_ids)} good units")
 
     return cleaned_sorting
@@ -149,7 +190,6 @@ def extract_all_templates(segment_sorting, te_params):
         te_params (dict): Dict of template extraction parameters.
     """
 
-    si.set_global_job_kwargs(n_jobs=te_params["n_jobs"], progress_bar=False)
     # Find recording path
     full_path = ss.get_recording_path(segment_sorting)
     # Find cutout for waveform extraction
@@ -176,8 +216,6 @@ def extract_all_templates(segment_sorting, te_params):
         template_matrix[:, :, els] = tmp_data
 
     return template_matrix, pos
-    # grid = convert_to_grid(template_matrix, pos)
-    # np.save(os.path.join(sorting_path, "templates.npy"), grid)
 
 
 def extract_templates(recording, sorting, te_params, cutout_ms):
