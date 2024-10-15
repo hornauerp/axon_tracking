@@ -40,11 +40,14 @@ def extract_templates_from_sorting_list(sorting_list, qc_params={}, te_params={}
     """
 
     for sorting_path in tqdm(sorting_list):
-        _, _, files = next(os.walk(os.path.join(sorting_path, "templates")))
-        file_count = len(files)  # Check for existing output in the folder
-        if file_count > 0 and not te_params["overwrite"]:
-            print(f"Templates already extracted for {sorting_path}")
-            continue
+        if os.path.isdir(
+            os.path.join(sorting_path, "templates")
+        ):  # Check if output folder exists
+            _, _, files = next(os.walk(os.path.join(sorting_path, "templates")))
+            file_count = len(files)  # Check for existing output in the folder
+            if file_count > 0 and not te_params["overwrite"]:
+                print(f"Templates already extracted for {sorting_path}")
+                continue
         try:
             segment_sorting = preprocess_sorting(sorting_path, qc_params)
             template_matrix, pos = extract_all_templates(segment_sorting, te_params)
