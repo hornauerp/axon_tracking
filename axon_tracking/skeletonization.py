@@ -1,20 +1,22 @@
-import os, kimimaro, sklearn
-import numpy as np
+import os
+
 import cloudvolume as cv
+import kimimaro
+import numpy as np
 import scipy.ndimage as nd
-from skimage.morphology import disk, ball
-from skimage.feature import peak_local_max
-from scipy.interpolate import RegularGridInterpolator
 import scipy.stats as stats
-from scipy.spatial.distance import pdist, cdist
+from scipy.interpolate import RegularGridInterpolator
+from scipy.spatial.distance import pdist
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score
+from skimage.feature import peak_local_max
+from skimage.morphology import ball
+
+from axon_tracking import utils as ut
 
 
-def full_skeletonization(
-    root_path, stream_id, template_id, params, skel_params, qc_params
-):
-    template, template_save_file, noise = load_template_file(
-        root_path, stream_id, template_id
-    )
+def full_skeletonization(root_path, template_id, params, skel_params, qc_params):
+    template, template_save_file, noise = load_template_file(root_path, template_id)
     if np.mean(noise) > params["max_noise_level"]:
         return [], []
 
@@ -55,85 +57,226 @@ def full_skeletonization(
     return qc_skeleton, scaled_qc_list
 
 
-def load_template_file(root_path, stream_id, template_id):
-    template_save_file = os.path.join(
-        root_path, stream_id, "sorter_output", "templates", str(template_id) + ".npy"
-    )  #'sorter_output',
-    noise_save_file = os.path.join(
-        root_path, stream_id, "templates", str(template_id) + "_noise.npy"
-    )
+def load_template_file(root_path, template_id):
+    """
+    Load a template file.
+    This function loads a template file from the specified root path and template ID.
+    The template file is expected to be in NumPy (.npy) format.
+    Args:
+        root_path (str): The root directory path where the template file is located.
+        template_id (int): The identifier for the template file. The file is expected
+                            to be named as '<template_id>.npy'.
+    Returns:
+        tuple: A tuple containing:
+            - template (numpy.ndarray): The loaded template as a NumPy array of type float64.
+            - template_save_file (str): The full path to the loaded template file.
+    """
+
+    template_save_file = os.path.join(root_path, str(template_id) + ".npy")
     template = np.load(template_save_file).astype("float64")
-    if False:  # os.path.exists(noise_save_file):
-        noise = np.load(noise_save_file).astype("float64")
+
+    return template, template_save_file
+
+
+def preprocess_template(template, params):
+    """
+    Preprocess a template by localizing the AIS and thresholding the template.
+    This function preprocesses a given template by localizing the AIS and thresholding
+    the template based on the absolute signal amplitude, the maximum velocity, and the
+    noise of the electrode.
+    Args:
+        template (numpy.ndarray): The template as a NumPy array.
+        params (dict): A dictionary containing the parameters for preprocessing.
+    Returns:
+        numpy.ndarray: The interpolated template.
+        numpy.ndarray: The noise matrix.
+        numpy.ndarray: The thresholded (boolean) template.
+    """
+    # Calculate the noise matrix based on the template
+    noise = generate_noise_matrix(template, mode="mad")
+    # Large median filter to remove noise
+    med_filt = nd.median_filter(template, footprint=ball(2))
+    # First derivative to eliminate slow drift
+    temp_diff = np.diff(med_filt)
+    # Median filter to remove noise from the derivative
+    tmp_filt = nd.median_filter(temp_diff, footprint=ball(1))
+    # Localize neurons based on the derivative
+    if params["ais_detection"] is not None:
+        tmp_filt, ais = localize_ais(tmp_filt, params)
     else:
-        # print('No noise file found, inferring from template')
-        noise = generate_noise_matrix(template)
+        ais = np.array([])
 
-    return template, template_save_file, noise
+    # Interpolate the template in x, y, and z (time)
+    interp_temp = interpolate_template(tmp_filt, spacing=params["upsample"])
+
+    # Generate a noise matrix based on the template
+    interp_noise = interpolate_template(noise, spacing=params["upsample"])
+
+    return interp_temp, interp_noise, ais
 
 
-def localize_neurons(
+def localize_ais(
     input_mat,
-    ms_cutout,
+    params,
     min_distance=5,
     threshold_rel=0.1,
-    num_peaks=3,
-    buffer_frames=2,
-    ms_peak_cutout=0.5,
 ):
+    """Localize the AIS in a given template.
+    This function localizes AIS in a given input matrix using the `peak_local_max`
+    function from the `skimage` library to detect the peaks.
+    Args:
+        input_mat (numpy.ndarray): The input matrix as a NumPy array.
+        params (dict): A dictionary containing the parameters for localization.
+        min_distance (int): The minimum distance between peaks.
+        threshold_rel (float): The relative threshold for peaks.
+    Returns:
+        numpy.ndarray: The capped matrix containing the localized neurons.
+        numpy.ndarray: The coordinates of the AIS peak.
+    """
+    peak_idx = params["ms_cutout"][0] * params["sampling_rate"] / 1000
+    peak_cutout = (
+        params["upsample"][2] * params["sampling_rate"] / 1000
+    )  # Cutout in ms before and after the peak
+    local_max = peak_local_max(
+        np.abs(input_mat), min_distance=5, threshold_rel=0.1, num_peaks=10
+    )
 
-    # local_max = peak_local_max(np.abs(input_mat), min_distance=min_distance, threshold_rel=threshold_rel, num_peaks=num_peaks)
+    if (
+        params["ais_detection"] == "dev"
+    ):  # Search for the minimum deviation from expected peak time
+        ais = local_max[np.argmin(local_max[:, 2] - peak_idx), :]
+    elif params["ais_detection"] == "time":  # Search for first peak
+        ais = local_max[np.argmin(local_max[:, 2]), :]
+    elif params["ais_detection"] == "amp":  # Search for highest peak
+        ais = local_max[0, :]
+    else:
+        raise ValueError("Invalid search mode")
 
-    # cutout_ratio = (ms_cutout[0]/np.sum(ms_cutout))
-    # peak_range = [(cutout_ratio-(ms_peak_cutout/np.sum(ms_cutout))),(cutout_ratio+(ms_peak_cutout/np.sum(ms_cutout)))]
-    # peak_range = np.round(np.array(peak_range)*input_mat.shape[2])
-
-    # target_coor = local_max[(local_max[:,2] >= peak_range[0]) & (local_max[:,2] <= peak_range[1]),:].astype("int16")
-
-    # if len(target_coor) > 0:
-    target_coor = list(np.unravel_index(np.argmax(-input_mat), input_mat.shape))
-    capped_matrix = input_mat[:, :, (target_coor[2] - buffer_frames) :]
-    target_coor[2] = buffer_frames
-    # else:
-    #    capped_matrix = input_mat
-    #    target_coor=[[0, 0, 0]]
-
-    # post_coor = local_max[local_max[:,2] > peak_range[1],:].astype("int16")
-    # if len(post_coor) > 0: #Check if postsynaptic target was detected
-    #    post_coor[0][2] = post_coor[0][2] - target_coor[0][2]
-
-    return capped_matrix, target_coor  # , post_coor
+    # Cap the matrix at the AIS peak time and add a buffer
+    ais_peak = np.min([ais[2], params["buffer_frames"]])  # Prevent negative indices
+    capped_matrix = input_mat[:, :, ais_peak:]
+    ais[2] = ais_peak
+    return capped_matrix, ais
 
 
-def generate_noise_matrix(template, noise=[], mode="mad"):
-    if not noise:
-        if mode == "mad":
-            noise = stats.median_abs_deviation(template, axis=2)
-        elif mode == "sd":
-            noise = np.std(template, axis=2)
+def generate_noise_matrix(template, mode="mad"):
+    """Generate a noise matrix based on the template.
+    This function generates a noise matrix based on the template. The noise matrix is
+    calculated as the median absolute deviation (MAD) or standard deviation (SD) of the
+    template along the third axis.
+    Args:
+        template (numpy.ndarray): The template as a NumPy array
+        noise (numpy.ndarray): The noise matrix to use. If not provided, the noise matrix
+                                 is generated based on the template.
+        mode (str): The mode to use for noise calculation. Can be either 'mad' for median
+                    absolute deviation or 'sd' for standard deviation.
+    Returns:
+        numpy.ndarray: The generated noise matrix.
+    """
 
-    noise_matrix = noise[:, :, np.newaxis]
+    if mode == "mad":
+        noise = stats.median_abs_deviation(template, axis=2)
+    elif mode == "sd":
+        noise = np.std(template, axis=2)
+
+    noise_matrix = noise[:, :, np.newaxis]  # For compatibility with the template shape
 
     return noise_matrix
 
 
 def threshold_template(template, noise, target_coor, params):
-    if params["noise_threshold"]:
+    """Generate a thresholded template based on the absolute signal amplitude, the
+    maximum velocity, and the noise of the electrode (taken from noise matrix).
+    Args:
+        template (numpy.ndarray): The template as a NumPy array.
+        noise (numpy.ndarray): The noise matrix as a NumPy array.
+        target_coor (list): The target coordinates for the template.
+        params (dict): A dictionary containing the parameters for thresholding.
+    Returns:
+        numpy.ndarray: The boolean thresholded template.
+    """
+
+    # mad_noise = generate_noise_matrix(template, mode="mad")
+    # sd_noise = generate_noise_matrix(template, mode="sd")
+    if params["noise_threshold"] is not None:
         noise_th = template < (
             params["noise_threshold"] * noise[:, :, : template.shape[2]]
         )
+        print("Noise thresholding")
     else:
         noise_th = np.full_like(template, True)
     abs_th = template < params["abs_threshold"]
-
-    # r = int((((template.shape[2] / params['sampling_rate']) * params['max_velocity']) * 1000000) / 17.5)
-    # velocity_th = cone(template.shape, r, apex=tuple(target_coor[0]))
     velocity_th = valid_latency_map(template, target_coor, params)
-    th_template = noise_th * abs_th * velocity_th
+    th_template = noise_th * abs_th * velocity_th  # * ((sd_noise / mad_noise) > 1)
     return th_template
 
 
+def valid_latency_map(template, start, params):
+    """Generate a boolean matrix indicating the valid latency map based on the maximum
+    velocity.
+    Args:
+        template (numpy.ndarray): The template as a NumPy array.
+        start (list): The starting coordinates (AIS) for velocity calculations.
+        params (dict): A dictionary containing the parameters for thresholding.
+    Returns:
+        numpy.ndarray: The boolean matrix indicating the valid latency map.
+    """
+
+    indices_array = np.indices(template.shape) * params["el_spacing"]  # convert to (um)
+    # Calculate the distance from the start point
+    distances = (
+        np.sqrt(
+            (indices_array[0] - start[0] * params["el_spacing"]) ** 2
+            + (indices_array[1] - start[1] * params["el_spacing"]) ** 2
+        )
+        / 1000000
+    )  # distances in m
+    delay_mat = np.zeros(distances.shape)  # Initialize delay matrix
+    for z in range(distances.shape[2]):
+        # Calculate the delay matrix based on the distance from the start point in
+        # the z-axis
+        delay_mat[:, :, z] = (1 / params["sampling_rate"]) * np.abs((z - start[2]))
+
+    # Set the delay matrix for the starting point to non-zero
+    delay_mat[:, :, start[2]] = 1 / params["sampling_rate"]
+
+    # Check which velocity is within the maximum velocity
+    passed = (distances / delay_mat) < params["max_velocity"]  # Boolean matrix
+    return passed
+
+
+def restore_sparse_template(template, spacing=(0.5, 0.5, 0.5)):
+    """Remove empty electrodes and interpolate the sparse template to fill in the gaps.
+    Args:
+        template (numpy.ndarray): The template as a NumPy array.
+        spacing (tuple): The spacing for interpolation.
+    Returns:
+        numpy.ndarray: The interpolated template.
+    """
+
+    # Find where the actual template begins (first non-zero electrode)
+    x, y, z = np.nonzero(template)
+    # Restrict template to the smallest bounding box
+    true_template = template[np.min(x) :, np.min(x) :, :]
+    # Remove empty electrodes (due to sparseness)
+    del_x = np.delete(
+        true_template, np.nonzero(np.sum(sel_test, axis=(0, 2)) == 0), axis=1
+    )
+    del_y = np.delete(del_x, np.nonzero(np.sum(sel_test, axis=(1, 2)) == 0), axis=0)
+    # Interpolate the template to fill in the gaps
+    interp_tmp = interpolate_template(del_y, spacing)
+    return interp_tmp
+
+
 def interp_max(x, spacing):
+    """Calculate the maximum value for interpolation.
+    Args:
+        x (numpy.ndarray): The input array.
+        spacing (int): The spacing for interpolation.
+    Returns:
+        int: The maximum value for interpolation.
+    """
+
     if len(x) == 1:
         interp_max = spacing
     elif spacing == 1:
@@ -146,6 +289,16 @@ def interp_max(x, spacing):
 def interpolate_template(
     template, spacing=[1, 1, 0.2], template_path=[], overwrite=False
 ):
+    """Generate an interpolated template based on the input template and spacing.
+    Args:
+        template (numpy.ndarray): The template as a NumPy array.
+        spacing (list): The spacing for interpolation.
+        template_path (str): The path to save the interpolated file to (optional).
+        overwrite (bool): Whether to overwrite the existing interpolated file.
+    Returns:
+        numpy.ndarray: The interpolated template.
+    """
+
     if template_path:
         split_path = template_path.split(sep="/")
         split_path[-1] = "interp_" + split_path[-1]
@@ -159,7 +312,6 @@ def interpolate_template(
     else:
         x, y, z = [np.arange(template.shape[k]) for k in range(3)]
         f = RegularGridInterpolator((x, y, z), template)
-        # new_grid = np.mgrid[0:x[-1]:spacing[0], 0:y[-1]:spacing[1], 0:z[-1]+1:spacing[2]]
         new_grid = np.mgrid[
             0 : interp_max(x, spacing[0]) : spacing[0],
             0 : interp_max(y, spacing[1]) : spacing[1],
@@ -175,23 +327,6 @@ def interpolate_template(
             np.save(interp_tmp_path, interp_template.astype("float32"))
 
     return interp_template
-
-
-def valid_latency_map(template, start, params):
-    indices_array = np.indices(template.shape) * params["el_spacing"]  # convert to (um)
-    distances = (
-        np.sqrt(
-            (indices_array[0] - start[0] * params["el_spacing"]) ** 2
-            + (indices_array[1] - start[1] * params["el_spacing"]) ** 2
-        )
-        / 1000000
-    )  # convert to (s)
-    th_mat = np.zeros(distances.shape)
-    for z in range(distances.shape[2]):
-        th_mat[:, :, z] = (params["max_velocity"] / params["sampling_rate"]) * (z + 2)
-
-    passed = distances <= th_mat
-    return passed
 
 
 def cone(matrix_shape, r, apex=[]):
@@ -212,26 +347,24 @@ def cone(matrix_shape, r, apex=[]):
     return cone_matrix
 
 
-def generate_dilation_structure(max_t, max_r, spacing=1 / 3, sampling_rate=20000):
-    """
-    max_t: numeric
-        Maximum time [us] to detect a peak from a previous peak
-    max_r: numeric
-        Maximum deviation [um] from the peak within max_t to detect the next peak
-    spacing: numeric
-        Spacing of the interpolation (if performed before the dilation)
-    """
-    el_dist = params["el_spacing"]
-    frame_time = (1000000 / sampling_rate) * spacing  # Assumes 20k sampling rate
-    t = np.ceil(max_t / frame_time).astype("int16")
-    r = np.ceil(max_r / el_dist).astype("int16")
-    d = (2 * r + 1).astype("int16")
+def generate_dilation_structure(max_t, params):
+    """Generate a cone-shaped dilation structure based on the maximum time and parameters.
+    Args:
+        max_t (int): The maximum time.
+        params (dict): A dictionary containing the parameters for dilation.
+    Returns:
+        numpy.ndarray: The generated dilation structure.
 
-    cone_matrix = cone((d, d, t), r)
-    # x, y, z = np.ogrid[:d, :d, :t]
-    # cone_equation = (x - (r))**2 + (y - (r))**2 <= r**2 * (1 - (z - 0)/t)**2
-    # cone_matrix = np.zeros((d,d,t), dtype=bool)
-    # cone_matrix[cone_equation] = True
+    """
+    frame_time = 1000000 / params["sampling_rate"]  # in us
+    t = np.ceil(max_t / frame_time).astype("int16")  # in samples
+    max_r = (
+        params["max_velocity"] * max_t
+    )  # Infer the maximum radius from the maximum velocity
+    r = np.ceil(max_r / params["el_spacing"]).astype("int16")  # in grid units
+    d = (2 * r + 1).astype("int16")  # maximum diameter of the cone
+
+    cone_matrix = cone((d, d, t), r)  # Generate the cone matrix
 
     structure = cone_matrix[:, :, ::-1]
     structure_base = np.full(
@@ -239,21 +372,14 @@ def generate_dilation_structure(max_t, max_r, spacing=1 / 3, sampling_rate=20000
     )
     structure_init = np.full((structure.shape[0], structure.shape[1], 1), False)
     structure_init[r, r, 0] = True
-    full_structure = np.concatenate((structure_base, structure_init, structure), axis=2)
+    full_structure = np.concatenate(
+        (structure_base, structure_init, structure), axis=2
+    )  # Ensure that dilation only occurs in the future
 
     return full_structure
 
 
-def iterative_dilation(
-    template,
-    r_dilation=2,
-    init_th=-10,
-    min_th=-1,
-    filter_footprint=(3, 3, 3),
-    use_derivative=True,
-):
-    if use_derivative:
-        template = np.diff(template)
+def iterative_dilation(template, params):
 
     structure = generate_dilation_structure(r_dilation)
     m_init = template < init_th  # Detection of initial seeds/definitive peaks
@@ -308,10 +434,8 @@ def perform_path_qc(
     vel_range=[0.4, 1],
     min_length=10,
 ):
-    if np.max(np.concatenate(paths)) < 220:
-        scaled_paths = scale_path_coordinates(paths, params)
-    else:
-        scaled_paths = paths
+
+    scaled_paths = ut.convert_coor_scale(paths, params, scale="um")
     good_path_list, r2s, vels, lengths = [], [], [], []
     path_list = []
     for path in scaled_paths:
@@ -430,32 +554,17 @@ def remove_circulating_paths(path_list, max_duplicate_ratio=0.3):
 
 def calculate_path_velocity(path, params):
     path_diff = np.diff(path, axis=0)
+    # print(path_diff)
     # print(path_diff.shape)
     dist = np.sqrt(path_diff[:, 0] ** 2 + path_diff[:, 1] ** 2) / 1000
     time = (np.cumsum(np.abs(path_diff[:, 2])) / params["sampling_rate"]) * 1000
-    regressor = sklearn.linear_model.LinearRegression(fit_intercept=False)
+    regressor = LinearRegression(fit_intercept=True)
     vel_y = np.cumsum(dist).reshape(-1, 1)
     vel_x = time.reshape(-1, 1)
     regressor.fit(vel_x, vel_y)
     y_pred = regressor.predict(vel_x)
-    r2 = sklearn.metrics.r2_score(vel_y, y_pred)
+    r2 = r2_score(vel_y, y_pred)
     return regressor.coef_[0][0], r2
-
-
-def scale_path_coordinates(path_list, params):
-    scaled_paths = [
-        np.concatenate((path[:, :2] * params["el_spacing"], path[:, 2:]), axis=1)
-        for path in path_list
-    ]
-    return scaled_paths
-
-
-def unscale_path_coordinates(path_list, params):
-    unscaled_paths = [
-        np.concatenate((path[:, :2] / params["el_spacing"], path[:, 2:]), axis=1)
-        for path in path_list
-    ]
-    return unscaled_paths
 
 
 def path_to_vertices(path_list, params, unscale=True):

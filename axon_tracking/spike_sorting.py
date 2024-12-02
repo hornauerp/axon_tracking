@@ -55,11 +55,19 @@ def sort_recording_list(
                 os.path.join(save_root, stream_id, "sorter_output", "amplitudes.npy")
             )
             if not os.path.exists(sorter_output_file):
-                multirecording, common_el, pos = concatenate_recording_slices(
-                    rec_path, stream_id
-                )
+                # Check if axon scan or network recording
+                rec_names = list(h5["wells"][stream_id].keys())
+                if len(rec_names) > 1:
+                    recording, common_el, pos = concatenate_recording_slices(
+                        rec_path, stream_id
+                    )
+                else:
+                    recording = si.MaxwellRecordingExtractor(
+                        rec_path, stream_id=stream_id, rec_name=rec_names[0]
+                    )
+
                 sorting = clean_sorting(
-                    multirecording,
+                    recording,
                     save_root,
                     stream_id,
                     sorter,

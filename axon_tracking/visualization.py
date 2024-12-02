@@ -10,6 +10,7 @@ from matplotlib.collections import LineCollection
 from skimage.morphology import ball
 
 from axon_tracking import skeletonization as skel
+from axon_tracking import utils as ut
 
 
 def plot_velocity_qc(vels, r2s, fig_size=(6, 2)):
@@ -59,14 +60,14 @@ def plot_delay_skeleton(
     params,
     skel_params,
     figsize=4,
-    plot_ais=True,
+    ais=None,
     plot_ais_connection=True,
     linewidth=2,
     font_size=24,
 ):
 
     # path_list = skel.scale_path_coordinates(path_list)
-    sorted_vertices = skel.path_to_vertices(path_list, params)
+    sorted_vertices = skel.path_to_vertices(path_list, params, unscale=False)
     c_max = 1000 * (sorted_vertices[-1][2]) / params["sampling_rate"]
     fig_ratio = (
         np.ptp(sorted_vertices, axis=0)[0] / np.ptp(sorted_vertices, axis=0)[1] + 0.7
@@ -92,25 +93,26 @@ def plot_delay_skeleton(
     )  # ,format=mticker.FixedFormatter(clb_ticks)
     clb.set_label(label="Delay (ms)", size=font_size * figsize)
     clb.ax.tick_params(labelsize=font_size * figsize, length=0)
-    if plot_ais:
+    if ais is not None:
         plt.scatter(
-            skel_params["ais"][0][0],
-            skel_params["ais"][0][1],
+            ais[0],
+            ais[1],
             s=50,
             color="k",
             zorder=10,
         )
 
-    if plot_ais_connection:
+    if plot_ais_connection and ais is not None:
         plt.plot(
-            [skel_params["ais"][0][0], sorted_vertices[0][0]],
-            [skel_params["ais"][0][1], sorted_vertices[0][1]],
+            [ais[0], sorted_vertices[0][0]], [ais[1], sorted_vertices[0][1]], c="k"
         )
-        # print(sorted_vertices[0][0])
+        print(sorted_vertices[0][0])
 
     ax.autoscale_view()
+
+    # ax.set_xlim([0, 440])
+    # ax.set_ylim([0, 240])
     ax.set_ylim(ax.get_ylim()[::-1])
-    # ax.set_xlim([0, 2200])
     # ax.set_xlabel("(μm)")
     # ax.set_ylabel("(μm)")
     # plt.show()
@@ -130,10 +132,11 @@ def plot_conduction_velocity(path_list, params, fig_size=(3, 3)):
     plt.show()
 
 
-def plot_template_and_noise(template, noise, th_template):
+def plot_template_and_noise(template, noise, th_template, vrange=[-3, 3]):
+    max_template = ut.generate_max_template(template, peak="both", absolute_value=False)
     fig, axes = plt.subplots(1, 3, figsize=(21, 7))
     plt.subplot(131)
-    plt.imshow(np.min(template, axis=2).T, vmin=-10, vmax=0)
+    plt.imshow(max_template.T, vmin=vrange[0], vmax=vrange[1], cmap="coolwarm")
     plt.colorbar(shrink=0.3)
 
     plt.subplot(132)
@@ -156,11 +159,12 @@ def plot_template_overview(
     unit_ids=None,
     overwrite=False,
 ):
-    full_filename = os.path.join(root_path, filename + ".png")
+    full_filename = os.path.join(root_path, "templates", filename + ".png")
     if os.path.exists(full_filename) and not overwrite:
         display(Image(filename=full_filename))
     else:
-        files = os.listdir(root_path)
+        template_folder = os.path.join(root_path, "templates")
+        files = os.listdir(template_folder)
         template_files = [f for f in files if "_" not in f]
         ids = [float(t.split(".")[0]) for t in template_files]
         if unit_ids is not None:
@@ -172,7 +176,7 @@ def plot_template_overview(
         n_rows = int(np.ceil(len(template_files) / n_cols))
         fig, axes = plt.subplots(n_rows, n_cols, figsize=(14, 3 * n_rows))
         for i, template_file in enumerate(template_files):
-            template_path = os.path.join(root_path, template_file)
+            template_path = os.path.join(template_folder, template_file)
             template = np.load(template_path)
             temp_diff = np.diff(template)
             tmp_filt = nd.gaussian_filter(temp_diff, sigma=1)
@@ -223,7 +227,7 @@ def plot_skeleton(skeleton, x_lim=[], y_lim=[], fig_size=5, marker_size=10, ais=
 def generate_propagation_gif(
     template,
     params,
-    cumulative=True,
+    cumulative=False,
     vertices=[],
     downsample=2,
     clim=[-10, 0],
@@ -234,16 +238,16 @@ def generate_propagation_gif(
     el_offset = params["el_spacing"]
     interp_offset = el_offset * spacing
     xticks = np.arange(0, 3850, 500)
-    yticks = np.arange(0, 2200, 500)
+    yticks = np.arange(0, 2100, 500)
     conv_xticks = xticks / interp_offset
     conv_yticks = yticks / interp_offset
     if len(vertices) > 0:
         x, y, z = [vertices[:, x] for x in range(3)]
 
-    clb_ticks = [
-        "0",
-        str(np.round(max(z) / (params["sampling_rate"] / 1000), decimals=1)),
-    ]
+        clb_ticks = [
+            "0",
+            str(np.round(max(z) / (params["sampling_rate"] / 1000), decimals=1)),
+        ]
     ims = []
 
     fig = plt.figure()  # added
@@ -289,7 +293,7 @@ def plot_filled_contour(
 ):
     interp_tmp = skel.interpolate_template(capped_template, spacing=params["upsample"])
     interp_tmp = nd.gaussian_filter(interp_tmp, sigma=0.8)
-    sorted_vertices = skel.path_to_vertices(skeleton.paths(), params)
+    sorted_vertices = skel.path_to_vertices(skeleton.paths(), params, unscale=False)
     skel_mat = np.zeros(interp_tmp.shape)
     skel_mat[tuple(sorted_vertices.astype("int").T)] = True
     dil_mat = nd.binary_dilation(skel_mat, structure=ball(radius))

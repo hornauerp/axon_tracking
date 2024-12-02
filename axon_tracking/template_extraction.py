@@ -75,12 +75,12 @@ def preprocess_sorting(sorting_path, qc_params):
     # Load sorting
     sorting = si.KiloSortSortingExtractor(sorting_path)
 
-    # Load recording
+    # Find recording path
     json_path = os.path.join(
         Path(sorting_path).parent.absolute(), "spikeinterface_recording.json"
     )
 
-    # Concatenate recordings to use for splitting the sorting
+    # Load concatenated recording to use for splitting the sorting
     multirecording = si.load_extractor(json_path, base_folder=True)
 
     # Clean sorting (perform quality control)
@@ -90,10 +90,11 @@ def preprocess_sorting(sorting_path, qc_params):
     )  # Relevant if last spike time == recording_length
     cleaned_sorting.register_recording(multirecording)
 
-    # Split sorting into segments
-    segment_sorting = si.SplitSegmentSorting(cleaned_sorting, multirecording)
+    # Split sorting into segments if it is a ConcatenateSegmentRecording
+    if isinstance(multirecording, si.ConcatenateSegmentRecording):
+        cleaned_sorting = si.SplitSegmentSorting(cleaned_sorting, multirecording)
 
-    return segment_sorting
+    return cleaned_sorting
 
 
 def perform_si_qc(sorting, recording, qc_params):
@@ -195,8 +196,7 @@ def extract_all_templates(segment_sorting, te_params):
     # Find cutout for waveform extraction
     cutout_samples, cutout_ms = ut.get_cutout_info(full_path)
     # Find out which well this belongs to
-    sorting_path = segment_sorting._annotations["phy_folder"]
-    stream_id = [p for p in sorting_path.split("/") if p.startswith("well")][0]
+    stream_id = ut.get_sorting_stream_id(segment_sorting)
 
     # Find electrode positions
     rec_names, _, pos = ss.find_common_electrodes(full_path, stream_id)

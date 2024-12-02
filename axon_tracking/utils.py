@@ -21,12 +21,36 @@ def infer_stream_id(sorting_path):
     return stream_id
 
 
+def get_sorting_stream_id(sorting):
+    """
+    Get the stream ID of the sorting object.
+
+    Args:
+        sorting (SortingExtractor): Sorting object.
+
+    Returns:
+        stream_id (str): Stream ID.
+    """
+    try:
+        stream_id = sorting._kwargs["recording_or_recording_list"][
+            0
+        ]._parent_recording._parent_recording.stream_id
+    except:
+        stream_id = sorting._recording._kwargs["recording_list"][
+            0
+        ]._parent._parent.stream_id
+
+    return stream_id
+
+
 def get_cutout_info(rec_path):
     """Extracts pre and post trigger cutout samples and their corresponding times in
     milliseconds from a given recording file.
 
+    Args:
         rec_path (str): Path to the HDF5 recording file.
 
+    Returns:
         tuple: A tuple containing:
             - cutout_samples (list): List of pre and post trigger cutout samples.
             - cutout_ms (list): List of pre and post trigger cutout times in milliseconds.
@@ -54,7 +78,7 @@ def get_cutout_info(rec_path):
     if cutout_samples[0] < 0:
         print("Network recording detected, using default [1.5, 5]")
         cutout_ms = np.array([1.5, 5])
-        cutout_samples = cutout_ms * (sampling_rate / 1000)
+        cutout_samples = (cutout_ms * (sampling_rate / 1000)).astype(int)
     else:
         cutout_ms = [
             x / (sampling_rate / 1000) for x in cutout_samples
@@ -107,3 +131,81 @@ def find_files(save_root, file_name="templates.npy", folder_name="sorter_output"
     ]
 
     return file_list
+
+
+def generate_max_template(template, peak="pos", absolute_value=False):
+    """
+    Generates a maximum template from a given template of shape (x*y*t).
+
+    Args:
+        template (np.ndarray): Template to generate the maximum template from.
+        peak (str): Peak to use for the maximum template. Can be "pos" or "neg" or "both".
+        absolute_value (bool): Whether to return the absolute value.
+
+    Returns:
+        np.ndarray: Maximum template of shape (x*y*1).
+    """
+    if peak == "pos":
+        max_template = np.max(template, axis=2)
+    elif peak == "neg":
+        max_template = np.min(template, axis=2)
+    elif peak == "both":
+        max_template = np.max(template, axis=2)
+        min_template = np.min(template, axis=2)
+        diff_idx = np.where(np.abs(min_template) > max_template)
+        max_template[diff_idx] = min_template[diff_idx]
+    else:
+        raise ValueError("Invalid peak value. Must be 'pos', 'neg' or 'both'.")
+
+    if absolute_value:
+        max_template = np.abs(max_template)
+
+    return max_template
+
+
+def check_if_scaled(path_list, params):
+    """
+    Checks if the coordinates are scaled to um.
+
+    Args:
+        path_list (list of np.ndarrays): Coordinates to check.
+
+    Returns:
+        bool: True if the coordinates are scaled, False otherwise.
+    """
+    coors = np.concatenate(path_list)[:, :2]  # Concatenate all coordinates
+
+    # Check if all coordinates are multiples of the electrode spacing
+    return np.all(np.remainder(coors, params["el_spacing"]) == 0)
+
+
+def convert_coor_scale(path_list, params, scale="um"):
+    """
+    Converts the coordinates to a different scale ('um' or 'el').
+
+    Args:
+        path_list (list of np.ndarrays): Coordinates to convert.
+        params (dict): Parameters dictionary containing the electrode spacing.
+        scale (str): Scale to convert to. Can be "um" or "el".
+
+    Returns:
+        list of np.ndarrays: List of converted coordinates.
+    """
+    if scale == "um":
+        if check_if_scaled(path_list, params):  # Check if already scaled to um
+            return path_list
+        scale_factor = params["el_spacing"]
+    elif scale == "el":
+        if not check_if_scaled(
+            path_list, params
+        ):  # Check if already in electrode spacing
+            return path_list
+        scale_factor = 1 / params["el_spacing"]
+    else:
+        raise ValueError("Invalid scale value. Must be 'um' or 'el'.")
+
+    rescaled = [
+        np.concatenate((path[:, :2] * params["el_spacing"], path[:, 2:]), axis=1)
+        for path in path_list
+    ]  # Rescale the coordinates without changing the z values
+    return rescaled
