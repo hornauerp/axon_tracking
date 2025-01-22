@@ -100,14 +100,15 @@ def preprocess_template(template, params):
     temp_diff = np.diff(med_filt)
     # Median filter to remove noise from the derivative
     tmp_filt = nd.median_filter(temp_diff, footprint=ball(1))
-    # Localize neurons based on the derivative
-    if params["ais_detection"] is not None:
-        tmp_filt, ais = localize_ais(tmp_filt, params)
-    else:
-        ais = np.array([])
 
     # Interpolate the template in x, y, and z (time)
     interp_temp = interpolate_template(tmp_filt, spacing=params["upsample"])
+    
+    # Localize neurons based on the derivative
+    if params["ais_detection"] is not None:
+        interp_temp, ais = localize_ais(interp_temp, params)
+    else:
+        ais = np.array([])
 
     # Generate a noise matrix based on the template
     interp_noise = interpolate_template(noise, spacing=params["upsample"])

@@ -165,7 +165,7 @@ def plot_template_overview(
     else:
         template_folder = os.path.join(root_path, "templates")
         files = os.listdir(template_folder)
-        template_files = [f for f in files if "_" not in f]
+        template_files = [f for f in files if "_" not in f if "overview" not in f]
         ids = [float(t.split(".")[0]) for t in template_files]
         if unit_ids is not None:
             sort_idx = [ids.index(x) for x in unit_ids]
@@ -181,7 +181,7 @@ def plot_template_overview(
             temp_diff = np.diff(template)
             tmp_filt = nd.gaussian_filter(temp_diff, sigma=1)
             plt.subplot(n_rows, n_cols, i + 1)
-            plt.imshow(np.min(tmp_filt, axis=2).T, vmin=vmin, vmax=vmax)
+            plt.imshow(np.min(tmp_filt, axis=2).T, vmin=vmin, vmax=vmax, cmap="gist_heat")
             plt.title(template_file)
 
         plt.savefig(full_filename)
