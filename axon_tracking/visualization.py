@@ -74,7 +74,7 @@ def plot_delay_skeleton(
     )
 
     fig, ax = plt.subplots(
-        figsize=(22 * figsize, 12 * figsize), constrained_layout=True
+        constrained_layout=True #figsize=(22 * figsize, 12 * figsize), 
     )
     for path in path_list:
         x = path[:, 0]
@@ -165,7 +165,9 @@ def plot_template_overview(
     else:
         template_folder = os.path.join(root_path, "templates")
         files = os.listdir(template_folder)
-        template_files = [f for f in files if "_" not in f if "overview" not in f]
+        template_files = [
+            f for f in files if "_" not in f if "overview" not in f if ".npy" in f
+        ]
         ids = [float(t.split(".")[0]) for t in template_files]
         if unit_ids is not None:
             sort_idx = [ids.index(x) for x in unit_ids]
@@ -181,7 +183,9 @@ def plot_template_overview(
             temp_diff = np.diff(template)
             tmp_filt = nd.gaussian_filter(temp_diff, sigma=1)
             plt.subplot(n_rows, n_cols, i + 1)
-            plt.imshow(np.min(tmp_filt, axis=2).T, vmin=vmin, vmax=vmax, cmap="gist_heat")
+            plt.imshow(
+                np.min(tmp_filt, axis=2).T, vmin=vmin, vmax=vmax, cmap="gist_heat"
+            )
             plt.title(template_file)
 
         plt.savefig(full_filename)
@@ -289,29 +293,29 @@ def generate_propagation_gif(
 
 
 def plot_filled_contour(
-    capped_template, skeleton, params, radius=5, save_path=[], fig_size=1, font_size=24
+    interp_tmp, skeleton, params, radius=5, save_path=[], fig_size=1, font_size=24
 ):
-    interp_tmp = skel.interpolate_template(capped_template, spacing=params["upsample"])
-    interp_tmp = nd.gaussian_filter(interp_tmp, sigma=0.8)
-    sorted_vertices = skel.path_to_vertices(skeleton.paths(), params, unscale=False)
+    #interp_tmp = skel.interpolate_template(capped_template, spacing=params["upsample"])
+   # interp_tmp = nd.gaussian_filter(interp_tmp, sigma=0.8)
+    skel_paths = ut.convert_coor_scale(skeleton.paths(), params, "el")
+    sorted_vertices = skel.path_to_vertices(skel_paths, params)
     skel_mat = np.zeros(interp_tmp.shape)
     skel_mat[tuple(sorted_vertices.astype("int").T)] = True
     dil_mat = nd.binary_dilation(skel_mat, structure=ball(radius))
     th_data = interp_tmp * dil_mat  # [:,:,t_cap[0]:t_cap[1]]
     contour_data = np.abs(np.min(th_data, axis=2).T)
-    contourf_lines = np.append(
-        np.floor(-np.max(contour_data)), np.linspace(-5, -0.1, 15)
-    )
+    #contourf_lines = np.linspace(-5, -0.1, 15) #np.append(np.floor(-np.max(contour_data)),  )
+    contourf_lines = np.geomspace(-np.max(contour_data),-0.1,10)
     # contourf_lines = np.append(np.geomspace(-np.max(contour_data),-3,10),np.linspace(-3, -0.1,15))
     fig, ax = plt.subplots(
         figsize=(22 * fig_size, 12 * fig_size), constrained_layout=True
     )
     plt.contourf(
-        -contour_data, levels=contourf_lines, cmap="inferno", vmin=-5, vmax=-0.1
+        -contour_data, levels=contourf_lines, cmap="inferno", vmin=np.max([-5, -np.max(contour_data)]), vmax=-0.1
     )  # ,linewidths = 0.2,vmax=20,vmin=2)hatches =[':'],
     clb = plt.colorbar(
         ticks=[-np.max(contour_data), -0.1],
-        format=mticker.FixedFormatter(["-100", "-2"]),
+        #format=mticker.FixedFormatter(["-100", "-2"]),
         shrink=0.3,
     )
     clb.set_label(label="\u03bcV/ms", size=font_size)
@@ -327,29 +331,31 @@ def plot_filled_contour(
 
 
 def plot_delay_contour(
-    capped_template, skeleton, params, skel_params, radius=5, save_path=[]
+    interp_tmp, skeleton, params, skel_params, radius=5, save_path=[], linewidth=4, n_contours=15
 ):
-    interp_tmp = skel.interpolate_template(capped_template, spacing=params["upsample"])
-    interp_tmp = nd.gaussian_filter(interp_tmp, sigma=0.8)
-    sorted_vertices = skel.path_to_vertices(skeleton.paths(), params)
+    #interp_tmp = skel.interpolate_template(capped_template, spacing=params["upsample"])
+    #interp_tmp = nd.gaussian_filter(interp_tmp, sigma=0.8)
+    skel_paths = ut.convert_coor_scale(skeleton.paths(), params, "el")
+    sorted_vertices = skel.path_to_vertices(skel_paths, params)
+    #sorted_vertices = skel.path_to_vertices(skeleton.paths(), params)
     skel_mat = np.zeros(interp_tmp.shape)
     skel_mat[tuple(sorted_vertices.astype("int").T)] = True
     dil_mat = nd.binary_dilation(skel_mat, structure=ball(radius))
     th_data = interp_tmp * dil_mat  # [:,:,t_cap[0]:t_cap[1]]
     contour_data = np.abs(np.min(th_data, axis=2).T)
-    contour_lines = np.append(
-        np.linspace(0.1, 2, 15), np.linspace(2.5, np.max(contour_data), 20)
-    )
-    # contour_lines = np.geomspace(0.1,np.max(contour_data),15)
+    # contour_lines = np.append(
+    #     np.linspace(0.1, 2, 15), np.linspace(2.5, np.max(contour_data), 20)
+    # )
+    contour_lines = np.geomspace(0.1,np.max(contour_data),n_contours)
 
     fig, ax = plot_delay_skeleton(
-        skel.unscale_path_coordinates(skeleton.paths(), params),
+        skel_paths,
         params,
         skel_params,
         figsize=1,
-        plot_ais=False,
+        ais=None,
         plot_ais_connection=False,
-        linewidth=4,
+        linewidth=linewidth,
     )
     plt.contour(
         contour_data,
@@ -360,8 +366,9 @@ def plot_delay_contour(
         zorder=0,
     )  # ,vmax=20,vmin=2)hatches =[':'],
     ax.autoscale_view()
-    ax.set_ylim([0, 120])
-    ax.set_ylim(ax.get_ylim()[::-1])
+    #ax.set_ylim([0, 120])
+    #ax.set_ylim(ax.get_ylim()[::-1])
+    #ax.set_xlim([0, 220])
     ax.axis("off")
     if save_path:
         plt.savefig(save_path, dpi=300, transparent=True)

@@ -103,7 +103,7 @@ def preprocess_template(template, params):
 
     # Interpolate the template in x, y, and z (time)
     interp_temp = interpolate_template(tmp_filt, spacing=params["upsample"])
-    
+
     # Localize neurons based on the derivative
     if params["ais_detection"] is not None:
         interp_temp, ais = localize_ais(interp_temp, params)
@@ -116,12 +116,7 @@ def preprocess_template(template, params):
     return interp_temp, interp_noise, ais
 
 
-def localize_ais(
-    input_mat,
-    params,
-    min_distance=5,
-    threshold_rel=0.1,
-):
+def localize_ais(input_mat, params):
     """Localize the AIS in a given template.
     This function localizes AIS in a given input matrix using the `peak_local_max`
     function from the `skimage` library to detect the peaks.
@@ -139,7 +134,7 @@ def localize_ais(
         params["upsample"][2] * params["sampling_rate"] / 1000
     )  # Cutout in ms before and after the peak
     local_max = peak_local_max(
-        np.abs(input_mat), min_distance=5, threshold_rel=0.1, num_peaks=10
+        np.abs(input_mat), min_distance=3, threshold_rel=0.1, num_peaks=10
     )
 
     if (
@@ -152,11 +147,12 @@ def localize_ais(
         ais = local_max[0, :]
     else:
         raise ValueError("Invalid search mode")
-
+    
     # Cap the matrix at the AIS peak time and add a buffer
-    ais_peak = np.min([ais[2], params["buffer_frames"]])  # Prevent negative indices
+    ais_buffer = np.min([ais[2], params["buffer_frames"]])  # Prevent negative indices
+    ais_peak = int(ais[2] - ais_buffer)
     capped_matrix = input_mat[:, :, ais_peak:]
-    ais[2] = ais_peak
+    ais[2] = ais_buffer
     return capped_matrix, ais
 
 
@@ -203,7 +199,7 @@ def threshold_template(template, noise, target_coor, params):
         noise_th = template < (
             params["noise_threshold"] * noise[:, :, : template.shape[2]]
         )
-        print("Noise thresholding")
+        # print("Noise thresholding")
     else:
         noise_th = np.full_like(template, True)
     abs_th = template < params["abs_threshold"]
@@ -569,8 +565,8 @@ def calculate_path_velocity(path, params):
 
 
 def path_to_vertices(path_list, params, unscale=True):
-    if unscale:
-        path_list = unscale_path_coordinates(path_list, params)
+    # if unscale:
+    #     path_list = unscale_path_coordinates(path_list, params)
 
     vertices = np.concatenate(path_list)
     sorted_indices = np.argsort(vertices[:, 2])
