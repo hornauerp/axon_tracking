@@ -5,9 +5,17 @@ from pathlib import Path
 from tqdm import tqdm
 from glob import glob
 
-def sort_recording_list(path_list, save_path_changes, sorter, sorter_params = dict(), clear_files=True, verbose=True):
+
+def sort_recording_list(
+    path_list,
+    save_path_changes,
+    sorter,
+    sorter_params=dict(),
+    clear_files=True,
+    verbose=True,
+):
     """
-    Function that iterates over a list of axon scans, finds common electrodes, concatenates and spike sorts the recording slices. 
+    Function that iterates over a list of axon scans, finds common electrodes, concatenates and spike sorts the recording slices.
 
     Arguments
     ----------
@@ -27,30 +35,41 @@ def sort_recording_list(path_list, save_path_changes, sorter, sorter_params = di
 
     Returns
     ----------
-    sorting_list: list of sorting objects 
+    sorting_list: list of sorting objects
         Specific type depends on the sorter.
-    
+
     """
-    
+
     sorting_list = []
-    
+
     for rec_path in tqdm(path_list, desc="Sorting recordings"):
-        
+
         h5 = h5py.File(rec_path)
-        #Check that all wells are recorded throughout all recordings (should not fail)
-        stream_ids = list(h5['wells'].keys())
+        # Check that all wells are recorded throughout all recordings (should not fail)
+        stream_ids = list(h5["wells"].keys())
 
         save_root = convert_rec_path_to_save_path(rec_path, save_path_changes)
-        
-        for stream_id in tqdm(stream_ids, desc="Sorting wells"):
-            sorter_output_file = Path(os.path.join(save_root, stream_id, 'sorter_output', 'amplitudes.npy'))
-            if not os.path.exists(sorter_output_file):
-                multirecording, common_el = concatenate_recording_slices(rec_path, stream_id)
-                sorting = clean_sorting(multirecording, save_root, stream_id, sorter, sorter_params, clear_files=clear_files, verbose=verbose)
-                sorting_list.append(sorting)
-            
-    return sorting_list
 
+        for stream_id in tqdm(stream_ids, desc="Sorting wells"):
+            sorter_output_file = Path(
+                os.path.join(save_root, stream_id, "sorter_output", "amplitudes.npy")
+            )
+            if not os.path.exists(sorter_output_file):
+                multirecording, common_el = concatenate_recording_slices(
+                    rec_path, stream_id
+                )
+                sorting = clean_sorting(
+                    multirecording,
+                    save_root,
+                    stream_id,
+                    sorter,
+                    sorter_params,
+                    clear_files=clear_files,
+                    verbose=verbose,
+                )
+                sorting_list.append(sorting)
+
+    return sorting_list
 
 
 def convert_rec_path_to_save_path(rec_path, save_path_changes):
@@ -64,32 +83,33 @@ def convert_rec_path_to_save_path(rec_path, save_path_changes):
     save_path_changes: dict
         Dictionary containing keys 'pos' and 'vals' that indicate the changes to be made to the rec_path.
         Refer to the inidices after splitting the path by '/'.
-        
+
     Returns
     ----------
     save_path: str
         Root save path. Well ID will be appended during the sorting.
     """
 
-    path_parts = rec_path.split('/')
-    for x,y in zip(save_path_changes['pos'], save_path_changes['vals']):
+    path_parts = rec_path.split("/")
+    for x, y in zip(save_path_changes["pos"], save_path_changes["vals"]):
         path_parts[x] = y
-        
+
     save_path = os.path.join(*path_parts)
-    
+
     return save_path
+
 
 def find_common_electrodes(rec_path, stream_id):
     """
     Function that returns the common electrodes of the successive axon scan recordings.
-    
+
     Arguments
     ----------
     rec_path: str
         Path to the axon scan file.
     stream_id: str
         Well ID in the format "well***"; Well 1 would be "well001", Well 20 would be "well020"
-        
+
     Returns
     ----------
     rec_names: list
@@ -97,36 +117,36 @@ def find_common_electrodes(rec_path, stream_id):
     common_el: list
         List of electrodes that are present in all axon scan recordings.
     """
-    
-    assert(os.path.exists(rec_path))
-    
+
+    assert os.path.exists(rec_path)
+
     h5 = h5py.File(rec_path)
-    rec_names = list(h5['wells'][stream_id].keys())
+    rec_names = list(h5["wells"][stream_id].keys())
     pos = dict()
-    x, y = np.full([1,26400], np.nan), np.full([1,26400], np.nan)
-    
+    x, y = np.full([1, 26400], np.nan), np.full([1, 26400], np.nan)
 
     for i, rec_name in enumerate(rec_names):
-        #rec_name = 'rec' + '%0*d' % (4, rec_id)
-        rec = si.MaxwellRecordingExtractor(rec_path, stream_id=stream_id, rec_name=rec_name)
+        # rec_name = 'rec' + '%0*d' % (4, rec_id)
+        rec = si.MaxwellRecordingExtractor(
+            rec_path, stream_id=stream_id, rec_name=rec_name
+        )
         rec_el = rec.get_property("contact_vector")["electrode"]
-        x[:,rec_el] = rec.get_property("contact_vector")['x']
-        y[:,rec_el] = rec.get_property("contact_vector")['y']
-        
+        x[:, rec_el] = rec.get_property("contact_vector")["x"]
+        y[:, rec_el] = rec.get_property("contact_vector")["y"]
+
         if i == 0:
             common_el = rec_el
         else:
             common_el = list(set(common_el).intersection(rec_el))
 
-    pos = {'x': x[0], 'y': y[0]}
-            
-    return rec_names, common_el, pos
+    pos = {"x": x[0], "y": y[0]}
 
+    return rec_names, common_el, pos
 
 
 def concatenate_recording_slices(rec_path, stream_id, center=True):
     """
-    Function that centers and concatenates the recordings of an axon scan for all common electrodes. 
+    Function that centers and concatenates the recordings of an axon scan for all common electrodes.
 
     Arguments
     ----------
@@ -134,7 +154,7 @@ def concatenate_recording_slices(rec_path, stream_id, center=True):
         Path to the axon scan file.
     stream_id: str
         Well ID in the format "well***"; Well 1 would be "well001", Well 20 would be "well020"
-        
+
     Returns
     ----------
     multirecording: ConcatenatedRecordingSlice
@@ -143,56 +163,76 @@ def concatenate_recording_slices(rec_path, stream_id, center=True):
 
     rec_names, common_el, pos = find_common_electrodes(rec_path, stream_id)
     if len(rec_names) == 1:
-        rec = si.MaxwellRecordingExtractor(rec_path, stream_id=stream_id, rec_name=rec_names[0])
+        rec = si.MaxwellRecordingExtractor(
+            rec_path, stream_id=stream_id, rec_name=rec_names[0]
+        )
         return rec
     else:
         rec_list = []
-        for rec_name in rec_names: 
-            #rec_name = 'rec' + '%0*d' % (4, r)
-            rec = si.MaxwellRecordingExtractor(rec_path, stream_id=stream_id, rec_name=rec_name)
-                    
-            ch_id = rec.get_property("contact_vector")['device_channel_indices']
+        for rec_name in rec_names:
+            # rec_name = 'rec' + '%0*d' % (4, r)
+            rec = si.MaxwellRecordingExtractor(
+                rec_path, stream_id=stream_id, rec_name=rec_name
+            )
+
+            ch_id = rec.get_property("contact_vector")["device_channel_indices"]
             rec_el = rec.get_property("contact_vector")["electrode"]
-            
+
             chan_idx = [np.where(rec_el == el)[0][0] for el in common_el]
             sel_channels = rec.get_channel_ids()[chan_idx]
             if center:
-                chunk_size = np.min([10000, rec.get_num_samples()]) - 100 #Fallback for ultra short recordings (too little activity)
-                rec = si.center(rec,chunk_size=chunk_size)
-            
-            rec_list.append(rec.channel_slice(sel_channels, renamed_channel_ids=list(range(len(chan_idx)))))
-        
+                chunk_size = (
+                    np.min([10000, rec.get_num_samples()]) - 100
+                )  # Fallback for ultra short recordings (too little activity)
+                rec = si.center(rec, chunk_size=chunk_size)
+
+            rec_list.append(
+                rec.channel_slice(
+                    sel_channels, renamed_channel_ids=list(range(len(chan_idx)))
+                )
+            )
+
         multirecording = si.concatenate_recordings(rec_list)
-    
+
         return multirecording, common_el, pos
 
+
 def intersect_and_concatenate_recording_list(rec_list):
-    assert(len(rec_list) > 1)
+    assert len(rec_list) > 1
     rec_el_list = []
     sliced_rec_list = []
-    for i,rec in enumerate(rec_list):
+    for i, rec in enumerate(rec_list):
         rec_el = rec.get_property("contact_vector")["electrode"]
         rec_el_list.append(rec_el)
         if i == 0:
             common_el = rec_el
         else:
             common_el = list(set(common_el).intersection(rec_el))
-            
+
     for i, els in enumerate(rec_el_list):
         chan_idx = [np.where(els == el)[0][0] for el in common_el]
         channel_ids = rec_list[i].get_channel_ids()[chan_idx]
-        slice_rec = rec_list[i].channel_slice(channel_ids, renamed_channel_ids=list(range(len(channel_ids))))
-        sliced_rec_list.append(slice_rec.astype('float32'))
-        
+        slice_rec = rec_list[i].channel_slice(
+            channel_ids, renamed_channel_ids=list(range(len(channel_ids)))
+        )
+        sliced_rec_list.append(slice_rec.astype("float32"))
+
     concatenated = si.concatenate_recordings(sliced_rec_list)
     return concatenated
-    
 
 
-def clean_sorting(rec, save_root, stream_id, sorter, sorter_params = dict(), clear_files=True, verbose=True):
+def clean_sorting(
+    rec,
+    save_root,
+    stream_id,
+    sorter,
+    sorter_params=dict(),
+    clear_files=True,
+    verbose=True,
+):
     """
     Function that creates output folder if it does not exist, sorts the recording using the specified sorter
-    and clears up large files afterwards. 
+    and clears up large files afterwards.
 
     Arguments
     ----------
@@ -213,39 +253,49 @@ def clean_sorting(rec, save_root, stream_id, sorter, sorter_params = dict(), cle
 
     Returns
     ----------
-    sorting: Sorting object 
+    sorting: Sorting object
         Specific type depends on the sorter.
     """
-    
+
     output_folder = Path(os.path.join(save_root, stream_id))
-    sorter_output_file = os.path.join(output_folder, 'sorter_output', 'amplitudes.npy')
+    sorter_output_file = os.path.join(output_folder, "sorter_output", "amplitudes.npy")
     sorting = []
     # Creates output folder if sorting has not yet been done
     if os.path.exists(sorter_output_file):
         return sorting
-    elif (rec.get_total_duration() < 30):
-        full_output_folder = Path(os.path.join(output_folder, 'sorter_output'))
+    elif rec.get_total_duration() < 30:
+        full_output_folder = Path(os.path.join(output_folder, "sorter_output"))
         full_output_folder.mkdir(parents=True, exist_ok=True)
-        np.save(sorter_output_file, np.empty(0)) #Empty file to indicate a failed sorting for future loops
+        np.save(
+            sorter_output_file, np.empty(0)
+        )  # Empty file to indicate a failed sorting for future loops
         return sorting
     else:
-        #output_folder.mkdir(parents=True, exist_ok=True)
-        raw_file = os.path.join(output_folder, 'sorter_output', 'recording.dat')
-        wh_file = os.path.join(output_folder, 'sorter_output', 'temp_wh.dat')
+        # output_folder.mkdir(parents=True, exist_ok=True)
+        raw_file = os.path.join(output_folder, "sorter_output", "recording.dat")
+        wh_file = os.path.join(output_folder, "sorter_output", "temp_wh.dat")
 
         if verbose:
-            print(f"DURATION: {rec.get_num_frames() / rec.get_sampling_frequency()} s -- "
-                    f"NUM. CHANNELS: {rec.get_num_channels()}")
+            print(
+                f"DURATION: {rec.get_num_frames() / rec.get_sampling_frequency()} s -- "
+                f"NUM. CHANNELS: {rec.get_num_channels()}"
+            )
 
         # We use try/catch to not break loops when iterating over several sortings (e.g. when not all wells were recorded)
         try:
             t_start_sort = time.time()
-            sorting = si.run_sorter(sorter, rec, output_folder=output_folder, verbose=verbose, remove_existing_folder=True,
-                                    **sorter_params)
+            sorting = si.run_sorter(
+                sorter,
+                rec,
+                output_folder=output_folder,
+                verbose=verbose,
+                remove_existing_folder=True,
+                **sorter_params,
+            )
             if verbose:
                 print(f"\n\nSpike sorting elapsed time {time.time() - t_start_sort} s")
-            
-            #Making sure we clean up the largest temporary files
+
+            # Making sure we clean up the largest temporary files
             if clear_files & os.path.exists(wh_file):
                 os.remove(wh_file)
             if clear_files & os.path.exists(raw_file):
@@ -256,8 +306,9 @@ def clean_sorting(rec, save_root, stream_id, sorter, sorter_params = dict(), cle
                 os.remove(wh_file)
             if clear_files & os.path.exists(raw_file):
                 os.remove(raw_file)
-                
+
     return sorting
+
 
 def generate_rec_list(path_parts):
     """
@@ -276,42 +327,45 @@ def generate_rec_list(path_parts):
         List of stream_ids (wells) recorded from the first recording.
     """
     path_pattern = os.path.join(*path_parts)
-    path_list  = glob(path_pattern)
+    path_list = glob(path_pattern)
     h5 = h5py.File(path_list[-1])
-    stream_ids = list(h5['wells'].keys())
+    stream_ids = list(h5["wells"].keys())
     path_list.sort()
-    
-    return path_list, stream_ids 
+
+    return path_list, stream_ids
+
 
 def concatenate_recording_list(path_list, stream_id):
     well_recording_list = []
-    for rec_path in path_list: #Iterate over recordings to be concatenated
-        try: # If not all wells were recorded, should be the only cause for an error
-            rec = si.MaxwellRecordingExtractor(rec_path,stream_id=stream_id)
+    for rec_path in path_list:  # Iterate over recordings to be concatenated
+        try:  # If not all wells were recorded, should be the only cause for an error
+            rec = si.MaxwellRecordingExtractor(rec_path, stream_id=stream_id)
             well_recording_list.append(rec)
         except Exception:
             continue
-               
+
     if len(well_recording_list) == len(path_list):
         multirecording = si.concatenate_recordings(well_recording_list)
     else:
-        raise ValueError('Could not load all recordings!')
-        
+        raise ValueError("Could not load all recordings!")
+
     saturated_count = find_saturated_channels(well_recording_list)
-    clean_multirecording = multirecording.remove_channels(multirecording.get_channel_ids()[saturated_count>0])
-    
-    
+    clean_multirecording = multirecording.remove_channels(
+        multirecording.get_channel_ids()[saturated_count > 0]
+    )
+
     return clean_multirecording
 
+
 def cut_concatenated_recording(concat_rec, cutout=np.inf):
-    rec_list = concat_rec._kwargs['recording_list']
+    rec_list = concat_rec._kwargs["recording_list"]
     sliced_list = []
     for rec in rec_list:
         duration = rec.get_total_duration()
         if cutout < duration:
             end_frame = rec.get_num_frames()
             start_frame = end_frame - cutout * rec.get_sampling_frequency()
-            sliced_rec = rec.frame_slice(start_frame,end_frame)
+            sliced_rec = rec.frame_slice(start_frame, end_frame)
             sliced_list.append(sliced_rec)
         else:
             sliced_list.append(rec)
@@ -319,7 +373,8 @@ def cut_concatenated_recording(concat_rec, cutout=np.inf):
     concat_sliced = si.concatenate_recordings(sliced_list)
     return concat_sliced
 
-def split_concatenated_sorting(sorting_path, path_suffix='sorter_output'):
+
+def split_concatenated_sorting(sorting_path, path_suffix="sorter_output"):
     """
     Function that takes the path of concatenated sorting and returns a SegmentSorting based on the durations of the individual recordings.
 
@@ -336,103 +391,135 @@ def split_concatenated_sorting(sorting_path, path_suffix='sorter_output'):
     """
     sorting_output = os.path.join(sorting_path, path_suffix)
     sorting = si.KiloSortSortingExtractor(sorting_output)
-    recording_path = os.path.join(sorting_path, 'spikeinterface_recording.json')
+    recording_path = os.path.join(sorting_path, "spikeinterface_recording.json")
     concat_rec = si.load_extractor(recording_path, base_folder=True)
     cleaned_sorting = si.remove_excess_spikes(sorting, concat_rec)
     cleaned_sorting.register_recording(concat_rec)
     segment_sorting = si.SplitSegmentSorting(cleaned_sorting, concat_rec)
-    
+
     return segment_sorting, concat_rec
 
-def save_split_sorting(seg_sorting, subfolder='segment_', keep_unit_ids=None, cutout=np.inf):
+
+def save_split_sorting(
+    seg_sorting, subfolder="segment_", keep_unit_ids=None, cutout=np.inf
+):
     N_segments = seg_sorting.get_num_segments()
     if len(seg_sorting.get_unit_ids()) > 0:
         for seg_id in range(N_segments):
             seg = si.SelectSegmentSorting(seg_sorting, seg_id)
             if keep_unit_ids is not None:
-                seg = seg.select_units(keep_unit_ids) # ,renamed_unit_ids=list(range(len(keep_unit_ids)))
-    
+                seg = seg.select_units(
+                    keep_unit_ids
+                )  # ,renamed_unit_ids=list(range(len(keep_unit_ids)))
+
             spikes = seg.to_spike_vector()
-            duration = np.ceil(spikes['sample_index'].max()/seg.get_sampling_frequency())
-            
+            duration = np.ceil(
+                spikes["sample_index"].max() / seg.get_sampling_frequency()
+            )
+
             if cutout < duration:
-                end_frame = spikes['sample_index'].max() + 1
+                end_frame = spikes["sample_index"].max() + 1
                 start_frame = end_frame - cutout * seg.get_sampling_frequency()
                 seg = seg.frame_slice(start_frame, end_frame)
-                
-            #spike_vector = seg.to_spike_vector(concatenated=True) #Removes original unit IDs
-            save_path = os.path.join(seg_sorting._annotations['phy_folder'], subfolder + str(seg_id))
+
+            # spike_vector = seg.to_spike_vector(concatenated=True) #Removes original unit IDs
+            save_path = os.path.join(
+                seg_sorting._annotations["phy_folder"], subfolder + str(seg_id)
+            )
             Path(save_path).mkdir(exist_ok=True)
-            spike_times_path = os.path.join(save_path, 'spike_times.npy')
-            spike_templates_path = os.path.join(save_path, 'spike_templates.npy')
-            template_mat_path = os.path.join(seg_sorting._annotations['phy_folder'], 'qc_output','templates.npy')
+            spike_times_path = os.path.join(save_path, "spike_times.npy")
+            spike_templates_path = os.path.join(save_path, "spike_templates.npy")
+            template_mat_path = os.path.join(
+                seg_sorting._annotations["phy_folder"], "qc_output", "templates.npy"
+            )
             if not os.path.exists(template_mat_path):
-                template_mat_path = os.path.join(seg_sorting._annotations['phy_folder'], 'templates.npy') #In case bc output was not exported
-                
-            channel_pos_path = os.path.join(seg_sorting._annotations['phy_folder'], 'channel_positions.npy')
-            params_pos_path = os.path.join(seg_sorting._annotations['phy_folder'], 'params.py')
-            np.save(spike_times_path, seg.get_all_spike_trains()[0][0])#spike_vector['sample_index'])
-            np.save(spike_templates_path, seg.get_all_spike_trains()[0][1])#spike_vector['unit_index'])
+                template_mat_path = os.path.join(
+                    seg_sorting._annotations["phy_folder"], "templates.npy"
+                )  # In case bc output was not exported
+
+            channel_pos_path = os.path.join(
+                seg_sorting._annotations["phy_folder"], "channel_positions.npy"
+            )
+            params_pos_path = os.path.join(
+                seg_sorting._annotations["phy_folder"], "params.py"
+            )
+            np.save(
+                spike_times_path, seg.get_all_spike_trains()[0][0]
+            )  # spike_vector['sample_index'])
+            np.save(
+                spike_templates_path, seg.get_all_spike_trains()[0][1]
+            )  # spike_vector['unit_index'])
             shutil.copy(template_mat_path, save_path)
             shutil.copy(channel_pos_path, save_path)
             shutil.copy(params_pos_path, save_path)
 
+
 def find_saturated_channels(rec_list, threshold=0):
     """
     Function that creates output folder if it does not exist, sorts the recording using the specified sorter
-    and clears up large files afterwards. 
+    and clears up large files afterwards.
 
     Arguments
     ----------
     rec_list: List of MaxwellRecordingExtractor objects.
         List of (potentially to be concatenated) recordings to be checked for saturated channels.
     threshold: float
-        Maximum ratio of saturated signal for the channel to still be accepted as non-saturated. 
+        Maximum ratio of saturated signal for the channel to still be accepted as non-saturated.
 
     Returns
     ----------
     saturated_count: np.array
-        Number of recordings in which the saturation threshold was crossed (channel was considered to be saturated). Values go from 0 to len(rec_list). 
+        Number of recordings in which the saturation threshold was crossed (channel was considered to be saturated). Values go from 0 to len(rec_list).
     """
     saturated_count = np.zeros((rec_list[0].get_num_channels()))
-    
+
     for i in range(0, len(rec_list)):
-        random_data = si.get_random_data_chunks(rec_list[i], num_chunks_per_segment = int((rec_list[i].get_total_duration()/60)))
-        saturated = (np.sum((random_data == 0).astype("int16") + (random_data == 1023).astype("int16"),axis=0)) / random_data.shape[0]
+        random_data = si.get_random_data_chunks(
+            rec_list[i],
+            num_chunks_per_segment=int((rec_list[i].get_total_duration() / 60)),
+        )
+        saturated = (
+            np.sum(
+                (random_data == 0).astype("int16")
+                + (random_data == 1023).astype("int16"),
+                axis=0,
+            )
+        ) / random_data.shape[0]
         saturated_count += saturated > threshold
     return saturated_count
 
+
 def get_stream_ids(rec_path):
     h5 = h5py.File(rec_path)
-    stream_ids = list(h5['wells'].keys())
+    stream_ids = list(h5["wells"].keys())
     return stream_ids
+
 
 def get_recording_path(sort_or_rec):
     start_dict = sort_or_rec
-    while 'file_path' not in start_dict._kwargs.keys():
-        if '_recording' in vars(start_dict) and start_dict._recording is not None:
+    while "file_path" not in start_dict._kwargs.keys():
+        if "_recording" in vars(start_dict) and start_dict._recording is not None:
             start_dict = start_dict._recording
-        elif 'sorting' in start_dict._kwargs.keys():
-            start_dict = start_dict._kwargs['sorting']
-        elif 'recording' in start_dict._kwargs.keys():
-            start_dict = start_dict._kwargs['recording']
-        elif 'recording_or_recording_list' in start_dict._kwargs.keys():
-            start_dict = start_dict._kwargs['recording_or_recording_list']
-        elif 'parent_recording' in start_dict._kwargs.keys():
-            start_dict = start_dict._kwargs['parent_recording']
-        elif 'recording_list' in start_dict._kwargs.keys():
-            start_dict = start_dict._kwargs['recording_list']
+        elif "sorting" in start_dict._kwargs.keys():
+            start_dict = start_dict._kwargs["sorting"]
+        elif "recording" in start_dict._kwargs.keys():
+            start_dict = start_dict._kwargs["recording"]
+        elif "recording_or_recording_list" in start_dict._kwargs.keys():
+            start_dict = start_dict._kwargs["recording_or_recording_list"]
+        elif "parent_recording" in start_dict._kwargs.keys():
+            start_dict = start_dict._kwargs["parent_recording"]
+        elif "recording_list" in start_dict._kwargs.keys():
+            start_dict = start_dict._kwargs["recording_list"]
         else:
-            print('Could not find recording path')
+            print("Could not find recording path")
             file_path = []
             break
         try:
             start_dict = start_dict[0]
-            
-        except Exception as e:
-                continue
-            
-    file_path = start_dict._kwargs['file_path']
 
-    
+        except Exception as e:
+            continue
+
+    file_path = start_dict._kwargs["file_path"]
+
     return file_path

@@ -1,296 +1,320 @@
-import os, h5py
-import spikeinterface.full as si
+"""
+This module provides functions for extracting templates from spike sorting data,
+performing quality control, and organizing the extracted templates into a grid format.
+Functions:
+    extract_templates_from_sorting_list(sorting_list, qc_params={}, te_params={}):
+        Performs template extraction from a list of sorting paths.
+        Does not require a recording path.
+    preprocess_sorting(sorting_path, qc_params={}):
+        Performs QC and splitting of a sorting object.
+    select_good_units(sorting, min_n_spikes=1500, exclude_mua=True, use_bc=False):
+        Selects good units based on quality control parameters from KS and BC.
+    extract_all_templates(stream_id, segment_sorting, save_root, pos, te_params):
+        Extracts templates from all units in a sorting object.
+    find_files(save_root, file_name="templates.npy", folder_name="sorter_output"):
+        Finds files with a specific name in a directory tree.
+    find_successful_sortings(path_list, save_path_changes):
+        Finds successful sorting paths based on the presence of specific files.
+    convert_to_grid(template_matrix, pos):
+        Converts a template matrix into a grid format based on electrode positions.
+"""
+
+import os
+from pathlib import Path
+
 import numpy as np
-import scipy as sp
-import sklearn as sk
 from tqdm import tqdm
 
+import spikeinterface.full as si
 from axon_tracking import spike_sorting as ss
+from axon_tracking import utils as ut
 
-def extract_templates_from_sorting_dict(sorting_dict, qc_params={}, te_params={}):
-    rec_list = list(sorting_dict.keys())
 
-    for rec_path in rec_list:
-        sorting_list = sorting_dict[rec_path]
-        sorting_list.sort()
-
-        for sorting_path in sorting_list:
-            sorting = si.KiloSortSortingExtractor(sorting_path)
-            stream_id = [p for p in sorting_path.split('/') if p.startswith('well')][0] #Find out which well this belongs to
-            print(stream_id)
-            #rec_names, common_el, pos = ss.find_common_electrodes(rec_path, stream_id)
-            multirecording, common_el, pos = ss.concatenate_recording_slices(rec_path, stream_id)
-            cleaned_sorting = select_good_units(sorting, **qc_params)
-            cleaned_sorting = si.remove_excess_spikes(cleaned_sorting, multirecording) #Relevant if last spike time == recording_length
-            cleaned_sorting.register_recording(multirecording)
-            segment_sorting = si.SplitSegmentSorting(cleaned_sorting, multirecording)
-            extract_all_templates(stream_id, segment_sorting, sorting_path, pos, te_params)
-            
 def extract_templates_from_sorting_list(sorting_list, qc_params={}, te_params={}):
     """Performs template extraction from a list of sorting paths. Does not require a recording path.
 
     Args:
-        sorting_list (list): Sorting path list without sorter output suffix.
+        sorting_list (list): Sorting path list with sorter_output suffix.
         qc_params (dict, optional): Dict of quality control parameters. Defaults to {}.
         te_params (dict, optional): Dict of template extraction parameters. Defaults to {}.
     """
-    
+    si.set_global_job_kwargs(n_jobs=te_params["n_jobs"], progress_bar=False)
     for sorting_path in tqdm(sorting_list):
+        if os.path.isdir(
+            os.path.join(sorting_path, "templates")
+        ):  # Check if output folder exists
+            _, _, files = next(os.walk(os.path.join(sorting_path, "templates")))
+            file_count = len(files)  # Check for existing output in the folder
+            if file_count > 0 and not te_params["overwrite"]:
+                print(f"Templates already extracted for {sorting_path}")
+                continue
         try:
-             output_path = os.path.join(sorting_path,'sorter_output')
-             sorting = si.KiloSortSortingExtractor(output_path)
-             json_path = os.path.join(sorting_path, 'spikeinterface_recording.json')
-             multirecording = si.load_extractor(json_path, base_folder=True)
-             rec_path = ss.get_recording_path(multirecording)
-             stream_id = [p for p in sorting_path.split('/') if p.startswith('well')][0] #Find out which well this belongs to
-                
-             rec_names, common_el, pos = ss.find_common_electrodes(rec_path, stream_id)
-             cleaned_sorting = select_good_units(sorting, **qc_params)
-             cleaned_sorting = si.remove_excess_spikes(cleaned_sorting, multirecording) #Relevant if last spike time == recording_length
-             cleaned_sorting.register_recording(multirecording)
-             segment_sorting = si.SplitSegmentSorting(cleaned_sorting, multirecording)
-             extract_all_templates(stream_id, segment_sorting, output_path, pos, te_params)
+            segment_sorting = preprocess_sorting(sorting_path, qc_params)
+            template_matrix, pos = extract_all_templates(segment_sorting, te_params)
+            unit_ids = segment_sorting.get_unit_ids()
+            save_folder = os.path.join(sorting_path, "templates")
+            os.makedirs(save_folder, exist_ok=True)
+            save_individual_templates(template_matrix, save_folder, unit_ids, pos)
+
         except Exception as e:
-            print(e)
+            print(f"Error: {e}")
             continue
-    
 
-def extract_templates_from_concatenated_recording(root_path, stream_id, qc_params={}, te_params={}):
 
-    sorting_path = os.path.join(root_path, stream_id)
-    seg_sorting, concat_rec = ss.split_concatenated_sorting(sorting_path)
-        
-    # Split axon tracking
-    ax_sorting = si.select_segment_sorting(seg_sorting,0)
-    ax_rec_path = ss.get_recording_path(ax_sorting)
-    ax_recording, common_el, pos = ss.concatenate_recording_slices(ax_rec_path, stream_id, center=False)
-    cleaned_sorting = select_good_units(seg_sorting, **qc_params)
-    ax_sorting = si.select_segment_sorting(cleaned_sorting,0)
-    ax_sorting = si.remove_excess_spikes(ax_sorting, ax_recording)
-    ax_sorting.register_recording(ax_recording)
-    ax_split_sorting = si.SplitSegmentSorting(ax_sorting, ax_recording)
+def preprocess_sorting(sorting_path, qc_params):
+    """Performs QC and splitting of a sorting object.
 
-    # Split network recordings
-    nw_sorting = si.select_segment_sorting(cleaned_sorting,1)
-    nw_recording = concat_rec._kwargs['recording_list'][1]._kwargs['recording']._kwargs['parent_recording']
-    nw_sorting = si.remove_excess_spikes(nw_sorting, nw_recording)
-    nw_sorting.register_recording(nw_recording)
-    nw_split_sorting = si.SplitSegmentSorting(nw_sorting, nw_recording)
+    Args:
+        sorting_path (str): Path to the folder containing the sorting output.
+        qc_params (dict, optional): QC parameter dictionary.
 
-    # Save split sortings
-    ss.save_split_sorting(nw_split_sorting)
-    
-    # Extract templates
-    extract_all_templates(stream_id, ax_split_sorting, sorting_path, pos, te_params)
+    Returns:
+        segment_sorting (SegmentSorting): Sorting that was split according to the
+        corresponding (axon tracking) recording.
+    """
+    # Load sorting
+    sorting = si.KiloSortSortingExtractor(sorting_path)
 
-def get_assay_information(rec_path):
-    h5 = h5py.File(rec_path)
-    pre, post, well_id = -1, -1, 0
-    while pre <= 0 or post <= 0: #some failed axon trackings give negative trigger_post values, so we try different wells
-        well_name = list(h5['wells'].keys())[well_id]
-        rec_name = list(h5['wells'][well_name].keys())[well_id]
-        sampling_rate = h5['wells'][well_name][rec_name]['settings']['sampling'][0]
-        try:
-            pre = h5['wells'][well_name][rec_name]['groups']['routed']['trigger_pre'][0]
-            post = h5['wells'][well_name][rec_name]['groups']['routed']['trigger_post'][0]
-        except:
-            break
-        well_id += 1
-    
-    cutout_samples = [pre, post]
-    #Workaround to accomodate waveform extraction from network recordings
-    if cutout_samples[0] < 0: 
-        print("Network recording detected, using default [1.5, 5]")
-        cutout_ms = np.array([1.5, 5])
-        cutout_samples = cutout_ms * (sampling_rate/1000)
-    else:
-        cutout_ms = [x / (sampling_rate/1000) for x in cutout_samples] #convert cutout to ms
-        
-    return cutout_samples, cutout_ms
+    # Find recording path
+    json_path = os.path.join(
+        Path(sorting_path).parent.absolute(), "spikeinterface_recording.json"
+    )
 
-def find_files(save_root, file_name="templates.npy", folder_name="sorter_output"):
-    file_list = [root
-                 for root, dirs, files in os.walk(save_root)
-                 for dir in dirs
-                 if dir == folder_name and os.path.exists(os.path.join(root,folder_name,file_name))]
-    #file_list = [os.path.join(file, folder_name) for file in file_list] 
-    return file_list
+    # Load concatenated recording to use for splitting the sorting
+    multirecording = si.load_extractor(json_path, base_folder=True)
 
-def find_successful_sortings(path_list, save_path_changes):
+    # Clean sorting (perform quality control)
+    cleaned_sorting = select_good_units(sorting, multirecording, qc_params)
+    cleaned_sorting = si.remove_excess_spikes(
+        cleaned_sorting, multirecording
+    )  # Relevant if last spike time == recording_length
+    cleaned_sorting.register_recording(multirecording)
 
-    sorting_dict = dict()
-    for rec_path in path_list:
-        save_root = ss.convert_rec_path_to_save_path(rec_path, save_path_changes)
-        
-        #Takes into account different sorting folder names, subfolder depth, well IDs etc.
-        sorting_files = [root
-                         for root, dirs, files in os.walk(save_root)
-                         for name in files
-                         if name == "templates.npy"]
-        sorting_dict[rec_path] = sorting_files
-        
-    return sorting_dict
+    # Split sorting into segments if it is a ConcatenateSegmentRecording
+    if isinstance(multirecording, si.ConcatenateSegmentRecording):
+        cleaned_sorting = si.SplitSegmentSorting(cleaned_sorting, multirecording)
 
-            
-def postprocess_sorting():
-    #Maybe we will do some postprocessing before we use them
-    return
-
-def select_good_units(sorting, min_n_spikes=1500, exclude_mua=True, use_bc=False):
-    if exclude_mua:
-        ks_idx = sorting.get_property('KSLabel') == 'good'
-    else:
-        ks_idx = np.full((sorting.get_num_units(),), True, dtype='bool')
-
-    if use_bc and len(sorting.get_property('bc_unitType')) > 0:
-        bc_idx = sorting.get_property('bc_unitType') == 'GOOD'
-    else:
-        #print('No bombcell output found')
-        bc_idx = np.full((sorting.get_num_units(),), True, dtype='bool')
-            
-    n_spikes = [len(sorting.get_unit_spike_train(x,segment_index=0)) for x in sorting.get_unit_ids()]
-
-    
-    good_n_spikes_idx = np.array(n_spikes) > min_n_spikes
-    good_idx = ks_idx & bc_idx & good_n_spikes_idx
-    good_ids = sorting.get_unit_ids()[good_idx]
-    cleaned_sorting = sorting.select_units(good_ids)
-    
     return cleaned_sorting
 
 
+def perform_si_qc(sorting, recording, qc_params):
+    """Performs quality control on a sorting object using spikeinterface metrics.
 
-def extract_waveforms(segment_sorting, stream_id, save_root, n_jobs, overwrite_wf, cutout, filter_flag):
-    full_path = ss.get_recording_path(segment_sorting)
-            
-    h5 = h5py.File(full_path)
-    rec_names = list(h5['wells'][stream_id].keys())
-    
-    for sel_idx, rec_name in enumerate(rec_names):
-        wf_path = os.path.join(save_root, 'waveforms', 'seg' + str(sel_idx))
-        if not os.path.exists(wf_path) or overwrite_wf:
-            rec = si.MaxwellRecordingExtractor(full_path,stream_id=stream_id,rec_name=rec_name)
-            chunk_size = np.min([10000, rec.get_num_samples()]) - 100 #Fallback for ultra short recordings (too little activity)
-            if filter_flag:
-                rec_centered = si.bandpass_filter(rec, freq_min=300, freq_max=6000)
-            else:
-                rec_centered = si.center(rec, chunk_size=chunk_size)
-            
-            seg_sort = si.SelectSegmentSorting(segment_sorting, sel_idx)
-            seg_sort = si.remove_excess_spikes(seg_sort, rec_centered)
-            seg_sort.register_recording(rec_centered)
-                    
-            seg_we = si.WaveformExtractor.create(rec_centered, seg_sort,
-                                                 wf_path, 
-                                                 allow_unfiltered=True,
-                                                 remove_if_exists=True)
-            seg_we.set_params(ms_before=cutout[0], ms_after=cutout[1], return_scaled = True, max_spikes_per_unit=10000)
-            seg_we.run_extract_waveforms(n_jobs=n_jobs, progress_bar=False)
+    Args:
+        sorting (BaseSorting): Sorting extractor object.
+        qc_params (dict): Dict of quality control parameters.
 
-def align_waveforms(seg_we, sel_unit_id, cutout, ms_peak_cutout, upsample, align_cutout, rm_outliers, n_jobs, n_neighbors):
-    
-    sample_peak_cutout = ms_peak_cutout * upsample
-    peak_idx = cutout[0] * upsample
-    peak_cutout = range(np.int16(peak_idx - sample_peak_cutout), np.int16(peak_idx + sample_peak_cutout))
-    wfs = seg_we.get_waveforms(sel_unit_id)
-    interp_wfs = sp.interpolate.pchip_interpolate(list(range(wfs.shape[1])), wfs, np.linspace(0,wfs.shape[1], num = wfs.shape[1]*upsample), axis=1)
-    interp_wfs = interp_wfs - np.median(interp_wfs, axis=1)[:,np.newaxis,:]
+    Returns:
+        BaseSorting: Sorting object with units that passed the QC.
+    """
+    full_analyzer = si.create_sorting_analyzer(sorting=sorting, recording=recording)
 
-    if align_cutout:
-        peak_el = [np.where(interp_wfs[w,peak_cutout,:] == np.nanmin(interp_wfs[w,peak_cutout,:]))[1][0] for w in range(interp_wfs.shape[0])]
-        ref_el, count = sp.stats.mode(peak_el, keepdims=False)
-        peak_shift = [np.where(interp_wfs[w,peak_cutout,ref_el] == np.nanmin(interp_wfs[w,peak_cutout,ref_el]))[0][0] for w in range(interp_wfs.shape[0])]
-        aligned_length = interp_wfs.shape[1] - 2*sample_peak_cutout
-        aligned_wfs = np.full([interp_wfs.shape[0], np.int16(aligned_length), interp_wfs.shape[2]], np.nan)
-        for w in range(interp_wfs.shape[0]):
-            aligned_wfs[w,:,:] = interp_wfs[w,peak_shift[w]:np.int16(peak_shift[w]+aligned_length),:]
+    full_analyzer.compute(
+        [
+            "random_spikes",
+            "waveforms",
+            "templates",
+            "spike_amplitudes",
+            "unit_locations",
+            "template_similarity",
+            "correlograms",
+        ]
+    )
+
+    if qc_params["auto_merge"]:
+        merge_unit_groups = si.get_potential_auto_merge(
+            full_analyzer, resolve_graph=True
+        )
+        full_analyzer = full_analyzer.merge_units(merge_unit_groups=merge_unit_groups)
+
+    if qc_params["remove_redundant"]:
+        sorting = si.remove_redundant_units(
+            full_analyzer, duplicate_threshold=0.8, remove_strategy="minimum_shift"
+        )
+
+    return sorting
+
+
+def select_good_units(sorting, recording, qc_params):
+    """Selects good units based on quality control parameters from KS and BC.
+
+    Args:
+        sorting (BaseSorting): Sorting extractor object.
+        min_n_spikes (int, optional): Minimum number of spikes required for a unit to be considered good. Defaults to 1500.
+        exclude_mua (bool, optional): Flag on whether to exclude MUA as labeled by KS. Defaults to True.
+        use_bc (bool, optional): Flag on whether to consider bombcell QC output. Defaults to False.
+
+    Returns:
+        UnitSelectionSorting: Sorting containing units that passed the QC.
+    """
+    # Kilosort QC
+    if qc_params["exclude_mua"]:
+        ks_idx = sorting.get_property("KSLabel") == "good"
     else:
-        aligned_wfs = interp_wfs
-    
+        ks_idx = np.full((sorting.get_num_units(),), True, dtype="bool")
 
-    if rm_outliers:
-        peak_el = [np.where(interp_wfs[w,peak_cutout,:] == np.nanmin(interp_wfs[w,peak_cutout,:]))[1][0] for w in range(interp_wfs.shape[0])]
-        ref_el, count = sp.stats.mode(peak_el, keepdims=False)
-        aligned_wfs = remove_wf_outliers(aligned_wfs, ref_el, n_jobs, n_neighbors)
-
-    aligned_template = np.median(aligned_wfs, axis=0)
-    
-    return aligned_template
-
-
-def remove_wf_outliers(aligned_wfs, ref_el, n_jobs, n_neighbors):
-    clf = sk.neighbors.LocalOutlierFactor(n_jobs=n_jobs, n_neighbors=n_neighbors)
-    outlier_idx = clf.fit_predict(aligned_wfs[:,:,ref_el])
-    #print(f'Detected {sum(outlier_idx==-1)} outliers')
-    outlier_rm = np.delete(aligned_wfs, outlier_idx==-1, axis=0)
-    
-    return outlier_rm
-
-def combine_templates(stream_id, segment_sorting, sel_unit_id, save_root, peak_cutout=2, align_cutout=True, upsample=2, 
-                      rm_outliers=True, n_jobs=16, n_neighbors=10, overwrite_wf=False, overwrite_tmp = True, filter_flag = False):
-    
-    full_path = ss.get_recording_path(segment_sorting)
-    cutout_samples, cutout_ms = get_assay_information(full_path)
-    #extract_waveforms(segment_sorting, stream_id, save_root, n_jobs, overwrite_wf, cutout_ms, filter_flag)
-    
-    if align_cutout:
-        wf_length = np.int16((sum(cutout_samples) - 2*peak_cutout) * upsample) #length of waveforms after adjusting for potential peak alignments
-        
+    # Bombcell QC (if present)
+    if qc_params["use_bc"] and len(sorting.get_property("bc_unitType")) > 0:
+        bc_idx = sorting.get_property("bc_unitType") == "GOOD"
     else:
-        wf_length = np.int16(sum(cutout_samples) * upsample)
-        
-    template_matrix = np.full([wf_length, 26400], np.nan)
-    #noise_levels = np.full([1,26400], np.nan)
-    
-    h5 = h5py.File(full_path)
-    rec_names = list(h5['wells'][stream_id].keys())
-    
+        # print('No bombcell output found')
+        bc_idx = np.full((sorting.get_num_units(),), True, dtype="bool")
+
+    # Minimum number of spikes QC
+    n_spikes = [
+        len(sorting.get_unit_spike_train(x, segment_index=0))
+        for x in sorting.get_unit_ids()
+    ]
+    good_n_spikes_idx = np.array(n_spikes) > qc_params["min_n_spikes"]
+
+    # Combine QC
+    good_idx = ks_idx & bc_idx & good_n_spikes_idx
+    good_ids = sorting.get_unit_ids()[good_idx]
+    cleaned_sorting = sorting.select_units(good_ids)
+
+    if qc_params["use_si"]:
+        cleaned_sorting = perform_si_qc(cleaned_sorting, recording, qc_params)
+
+    print(f"Keeping {len(good_ids)} good units")
+
+    return cleaned_sorting
+
+
+def extract_all_templates(segment_sorting, te_params):
+    """Extracts templates from all units in a sorting object.
+
+    Args:
+        stream_id (str): Stream ID of the recording.
+        segment_sorting (BaseSorting): SegmentSorting object.
+        save_root (str): Root path for saving the templates.
+        pos (dict): Dict containing electrode positions.
+        te_params (dict): Dict of template extraction parameters.
+    """
+
+    # Find recording path
+    full_path = ss.get_recording_path(segment_sorting)
+    # Find cutout for waveform extraction
+    cutout_samples, cutout_ms = ut.get_cutout_info(full_path)
+    # Find out which well this belongs to
+    stream_id = ut.get_sorting_stream_id(segment_sorting)
+
+    # Find electrode positions
+    rec_names, _, pos = ss.find_common_electrodes(full_path, stream_id)
+    n_units = segment_sorting.get_num_units()
+    # Initialize template matrix
+    template_matrix = np.full([n_units, sum(cutout_samples), 26400], np.nan)
+
+    # Extract templates (main loop)
     for sel_idx, rec_name in enumerate(rec_names):
-        rec = si.MaxwellRecordingExtractor(full_path,stream_id=stream_id,rec_name=rec_name)
-        els = rec.get_property("contact_vector")["electrode"]
+        rec = si.MaxwellRecordingExtractor(
+            full_path, stream_id=stream_id, rec_name=rec_name
+        )
         seg_sort = si.SelectSegmentSorting(segment_sorting, sel_idx)
-        seg_we = si.load_waveforms(os.path.join(save_root, 'waveforms', 'seg' + str(sel_idx)), sorting = seg_sort)
-        aligned_wfs = align_waveforms(seg_we, sel_unit_id, cutout_samples, peak_cutout, upsample, align_cutout, rm_outliers, n_jobs, n_neighbors)
-        template_matrix[:,els] = aligned_wfs #find way to average common electrodes 
-        #noise_levels[:,els] = si.compute_noise_levels(seg_we)
-    
-    return template_matrix#, noise_levels
+        tmp_data = extract_templates(rec, seg_sort, te_params, cutout_ms)
+
+        els = rec.get_property("contact_vector")["electrode"]
+        template_matrix[:, :, els] = tmp_data
+
+    return template_matrix, pos
+
+
+def extract_templates(recording, sorting, te_params, cutout_ms):
+    """
+    Extracts templates from a given recording and corresponding sorting.
+    Args:
+    recording : si.RecordingExtractor
+        The recording extractor object containing the neural recordings.
+    sorting : si.SortingExtractor
+        The sorting extractor object containing the spike sorting results.
+    te_params : dict
+        A dictionary containing template extraction parameters:
+        - 'freq_min': Minimum frequency for high-pass filtering.
+        - 'overwrite': Boolean indicating whether to overwrite existing data.
+        - 'max_spikes_per_unit': Maximum number of spikes per unit for spike extraction.
+    cutout_ms : tuple
+        A tuple containing two elements:
+        - ms_before: Time in milliseconds before the spike to include in the waveform.
+        - ms_after: Time in milliseconds after the spike to include in the waveform.
+    Returns:
+    np.ndarray
+        A numpy array containing the extracted templates.
+    """
+
+    # Filter recording
+    if isinstance(te_params["filter_band"], list):
+        btype = "bandpass"
+    else:
+        btype = "highpass"
+
+    rec_centered = si.filter(recording, btype=btype, band=te_params["filter_band"])
+
+    sorting = si.remove_excess_spikes(sorting, rec_centered)
+    sorting.register_recording(rec_centered)
+
+    analyzer = si.create_sorting_analyzer(
+        sorting=sorting,
+        recording=rec_centered,
+        sparse=False,
+    )
+
+    analyzer.compute(
+        [
+            "random_spikes",
+            "waveforms",
+            "templates",
+        ],
+        extension_params={
+            "random_spikes": {"max_spikes_per_unit": te_params["max_spikes_per_unit"]},
+            "waveforms": {"ms_before": cutout_ms[0], "ms_after": cutout_ms[1]},
+        },
+    )
+
+    tmp = analyzer.get_extension(extension_name="templates")
+    tmp_data = tmp.get_data()
+    return tmp_data
+
 
 def convert_to_grid(template_matrix, pos):
-    clean_template = np.delete(template_matrix, np.isnan(pos['x']), axis = 1)
-    clean_x = pos['x'][~np.isnan(pos['x'])]
-    clean_y = pos['y'][~np.isnan(pos['y'])]
+    """
+    Converts a template matrix into a grid based on provided positions.
+    Parameters:
+    template_matrix (numpy.ndarray): The template matrix to be converted.
+    pos (dict): A dictionary containing 'x' and 'y' positions. The positions
+                should be numpy arrays with the same length as the number of columns
+                in the template_matrix.
+    Returns:
+    numpy.ndarray: A 3D grid where the first two dimensions correspond to the
+                   x and y indices derived from the positions, and the third
+                   dimension corresponds to the voltage over time.
+    """
+
+    # Clean up template matrix and positions to remove NaNs from sparse recordings
+    clean_template = np.delete(template_matrix, np.isnan(pos["x"]), axis=1)
+    clean_x = pos["x"][~np.isnan(pos["x"])]
+    clean_y = pos["y"][~np.isnan(pos["y"])]
+
+    # Convert positions to the grid
     x_idx = np.int16(clean_x / 17.5)
     y_idx = np.int16(clean_y / 17.5)
-    grid = np.full([np.max(x_idx) + 1, np.max(y_idx) + 1, clean_template.shape[0]],0).astype('float32')
-    for i in range(len(y_idx)):
-        grid[x_idx[i],y_idx[i],:] = clean_template[:,i]
-    
+    grid = np.full(
+        [np.max(x_idx) + 1, np.max(y_idx) + 1, clean_template.shape[0]], 0
+    ).astype("float32")
+    for i, _ in enumerate(y_idx):
+        grid[x_idx[i], y_idx[i], :] = clean_template[:, i]
+
     return grid
 
 
-def extract_all_templates(stream_id, segment_sorting, save_root, pos, te_params):
-    sel_unit_ids = segment_sorting.get_unit_ids()
-    template_save_path = os.path.join(save_root, 'templates')
-    if not os.path.exists(template_save_path):
-        os.makedirs(template_save_path)
+def save_individual_templates(template_matrix, save_folder, unit_ids, pos):
+    """
+    Saves the template matrix to a specified path.
+    Parameters:
+    template_matrix (numpy.ndarray): The template matrix to be saved.
+    save_path (str): The path to save the templates to.
+    """
 
-    full_path = ss.get_recording_path(segment_sorting)
-    cutout_samples, cutout_ms = get_assay_information(full_path)
-    extract_waveforms(segment_sorting, stream_id, save_root, te_params['n_jobs'], te_params['overwrite_wf'], cutout_ms, te_params['filter_flag'])
-    
-    for sel_unit_id in tqdm(sel_unit_ids): 
-        template_save_file = os.path.join(template_save_path, str(sel_unit_id) + '.npy')
-        #noise_save_file = os.path.join(template_save_path, str(sel_unit_id) + '_noise.npy')
-        
-        if not os.path.isfile(template_save_file) or te_params['overwrite_tmp']:
-            try:
-                template_matrix = combine_templates(stream_id, segment_sorting, sel_unit_id, save_root, **te_params)
-                grid = convert_to_grid(template_matrix, pos)
-                np.save(template_save_file, grid)
-                #noise_levels = convert_to_grid(noise_levels, pos)
-                #np.save(noise_save_file, noise_levels)
-                
-            except Exception as e:
-                print(f'Unit {sel_unit_id} encountered the following error:\n {e}')
-
+    for i, id in enumerate(unit_ids):
+        save_path_i = os.path.join(save_folder, f"{id}.npy")
+        tmp = np.squeeze(template_matrix[i, :, :])
+        grid = convert_to_grid(tmp, pos)
+        np.save(save_path_i, grid)
