@@ -176,8 +176,11 @@ def check_if_scaled(path_list, params):
     coors = np.concatenate(path_list)[:, :2]  # Concatenate all coordinates
 
     # Check if all coordinates are multiples of the electrode spacing
-    #return np.all(np.remainder(coors, params["el_spacing"]) == 0) # Does not work when paths are smoothed
-    return np.max(coors[:,0])> 220 / params['upsample'][0] and np.max(coors[:,1])> 220 / params['upsample'][1]
+    # return np.all(np.remainder(coors, params["el_spacing"]) == 0) # Does not work when paths are smoothed
+    return (
+        np.max(coors[:, 0]) > 220 / params["upsample"][0]
+        and np.max(coors[:, 1]) > 220 / params["upsample"][1]
+    )
 
 
 def convert_coor_scale(path_list, params, scale="um"):

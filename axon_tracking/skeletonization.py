@@ -147,7 +147,7 @@ def localize_ais(input_mat, params):
         ais = local_max[0, :]
     else:
         raise ValueError("Invalid search mode")
-    
+
     # Cap the matrix at the AIS peak time and add a buffer
     ais_buffer = np.min([ais[2], params["buffer_frames"]])  # Prevent negative indices
     ais_peak = int(ais[2] - ais_buffer)
