@@ -1,4 +1,7 @@
 # .pre-commit-config.yaml
+ci:
+  skip: [jupyter-nb-clear-output]  # pre-commit.ci does not support language: system hooks
+
 repos:
 - repo: local
   hooks:

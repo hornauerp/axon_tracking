@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "axon_tracking"
+version = "0.1.0"
+description = "Reconstruct the functional axonal morphology of neurons from high-density microelectrode array (HD-MEA) recordings."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    # SpikeInterface changes its API frequently; bump the upper bound deliberately.
+    "spikeinterface>=0.105,<0.106",
+    "pandas",  # needed by spikeinterface to read Kilosort output and to compare sortings
+    "numba",  # needed by spikeinterface for refractory period violations (auto merge)
+    "kimimaro>=5.8",
+    "osteoid>=0.7",
+    "numpy>=1.26",
+    "scipy",
+    "scikit-learn",
+    "scikit-image",
+    "h5py",
+    "tqdm",
+    "matplotlib",
+    "networkx",  # graph_reconstruction
+]
+
+[project.optional-dependencies]
+test = ["pytest", "LFPykit"]
+notebooks = ["ipykernel", "ipython", "cloud-volume", "pandas", "seaborn"]
+# axon_tracking.simulation; biophysical currents additionally need NEURON (Windows installer or pip on Linux/macOS)
+simulation = ["LFPykit"]
+
+[tool.setuptools]
+packages = ["axon_tracking"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-p no:cacheprovider"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore:FigureCanvasAgg is non-interactive:UserWarning",
+]

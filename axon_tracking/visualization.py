@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 import scipy.ndimage as nd
-from IPython.display import Image, display
 from matplotlib.collections import LineCollection
 from skimage.morphology import ball
 
@@ -106,7 +105,6 @@ def plot_delay_skeleton(
         plt.plot(
             [ais[0], sorted_vertices[0][0]], [ais[1], sorted_vertices[0][1]], c="k"
         )
-        print(sorted_vertices[0][0])
 
     ax.autoscale_view()
 
@@ -161,6 +159,8 @@ def plot_template_overview(
 ):
     full_filename = os.path.join(root_path, "templates", filename + ".png")
     if os.path.exists(full_filename) and not overwrite:
+        from IPython.display import Image, display
+
         display(Image(filename=full_filename))
     else:
         template_folder = os.path.join(root_path, "templates")
@@ -197,12 +197,21 @@ def plot_waveforms(template):
     plt.show()
 
 
-def plot_skeleton(skeleton, x_lim=[], y_lim=[], fig_size=5, marker_size=10, ais=[]):
+def plot_skeleton(
+    skeleton,
+    x_lim=(),
+    y_lim=(),
+    fig_size=5,
+    marker_size=10,
+    ais=(),
+    sampling_rate=20000,
+):
+    """Scatter plot of the skeleton vertices colored by latency; z is in samples at sampling_rate [Hz]."""
     x, y, z = [skeleton.vertices[:, x] for x in range(3)]
     x_scaling = np.abs(
         ((np.max(x) - np.min(x)) / (np.max(y) - np.min(y))) * 1.15
     )  # [0]
-    clb_ticks = ["0", str(np.round(max(z) / 20, decimals=1))]
+    clb_ticks = ["0", str(np.round(max(z) / (sampling_rate / 1000), decimals=1))]
 
     fig, axes = plt.subplots(figsize=(fig_size * x_scaling, fig_size))
 
@@ -214,7 +223,7 @@ def plot_skeleton(skeleton, x_lim=[], y_lim=[], fig_size=5, marker_size=10, ais=
     clb.set_label(label="Latency (ms)", size=6)
     clb.ax.tick_params(labelsize=6, length=0)
     # axes.set_axis_off()
-    if len(x_lim) > 1 & len(y_lim) > 1:
+    if len(x_lim) > 1 and len(y_lim) > 1:
         plt.xlim(x_lim)
         plt.ylim(y_lim)
     else:

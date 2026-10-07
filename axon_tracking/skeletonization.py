@@ -1,12 +1,12 @@
 import os
+import warnings
 
-import cloudvolume as cv
 import kimimaro
 import numpy as np
+import osteoid
 import scipy.ndimage as nd
 import scipy.stats as stats
 from scipy.interpolate import RegularGridInterpolator
-from scipy.spatial.distance import pdist
 from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score
 from skimage.feature import peak_local_max
@@ -16,32 +16,41 @@ from axon_tracking import utils as ut
 
 
 def full_skeletonization(root_path, template_id, params, skel_params, qc_params):
-    template, template_save_file, noise = load_template_file(root_path, template_id)
-    if np.mean(noise) > params["max_noise_level"]:
+    """
+    Runs the full skeletonization pipeline on a single template: preprocessing, thresholding,
+    skeletonization and two rounds of path QC.
+
+    Args:
+        root_path (str): Folder containing the template files (<template_id>.npy).
+        template_id (int): Unit/template ID.
+        params (dict): Preprocessing/thresholding parameters (see notebooks/part3_skeletonization.ipynb).
+            If params["max_noise_level"] is set, templates whose mean noise (MAD) exceeds it are skipped.
+        skel_params (dict): Parameters passed to `skeletonize`.
+        qc_params (dict): Parameters passed to `perform_path_qc`.
+
+    Returns:
+        qc_skeleton (osteoid.Skeleton): Skeleton after QC (coordinates in um, z in samples), or [] if skipped.
+        scaled_qc_list (list): Paths that passed the QC, or [] if skipped.
+    """
+    template, _ = load_template_file(root_path, template_id)
+    interp_temp, interp_noise, ais = preprocess_template(template, params)
+    max_noise_level = params.get("max_noise_level")
+    if max_noise_level is not None and np.mean(interp_noise) > max_noise_level:
         return [], []
 
-    temp_diff = np.diff(template)
-    capped_template, target_coor = localize_neurons(
-        temp_diff, ms_cutout=params["ms_cutout"]
-    )
-    tmp_filt = nd.gaussian_filter(capped_template, sigma=1)
-    interp_temp = interpolate_template(tmp_filt, spacing=params["upsample"])
-    th_template = threshold_template(interp_temp, noise, target_coor, params)
-
-    t_cap = [0, th_template.shape[2]]  # in samples
-    skels = skeletonize(
-        th_template[:, :, t_cap[0] : t_cap[1]].astype("bool"), **skel_params
-    )
+    th_template = threshold_template(interp_temp, interp_noise, ais, params)
+    skels = skeletonize(th_template.astype("bool"), **skel_params)
+    if 1 not in skels:
+        return [], []
     skeleton = kimimaro.join_close_components(skels[1], radius=5)
     skeleton = kimimaro.postprocess(skeleton, tick_threshold=5, dust_threshold=10)
 
     all_branches = branches_from_paths(skeleton)
-    scaled_qc_list, r2s, vels, lengths = perform_path_qc(
-        all_branches, params, **qc_params
-    )
+    scaled_qc_list, _, _, _ = perform_path_qc(all_branches, params, **qc_params)
+    if len(scaled_qc_list) == 0:
+        return [], []
 
-    qc_skel_list = [cv.Skeleton.from_path(x) for x in scaled_qc_list]
-    qc_skeleton = cv.Skeleton.simple_merge(qc_skel_list)
+    qc_skeleton = paths_to_skeleton(scaled_qc_list)
     qc_skeleton = kimimaro.postprocess(
         qc_skeleton, dust_threshold=10, tick_threshold=10
     )
@@ -49,10 +58,7 @@ def full_skeletonization(root_path, template_id, params, skel_params, qc_params)
     qc_skeleton = kimimaro.postprocess(qc_skeleton, dust_threshold=0, tick_threshold=0)
 
     all_branches = branches_from_paths(qc_skeleton)
-
-    scaled_qc_list, r2s, full_vels, lengths = perform_path_qc(
-        all_branches, params, **qc_params
-    )
+    scaled_qc_list, _, _, _ = perform_path_qc(all_branches, params, **qc_params)
 
     return qc_skeleton, scaled_qc_list
 
@@ -90,7 +96,7 @@ def preprocess_template(template, params):
     Returns:
         numpy.ndarray: The interpolated template.
         numpy.ndarray: The noise matrix.
-        numpy.ndarray: The thresholded (boolean) template.
+        numpy.ndarray: The AIS coordinates (empty if params["ais_detection"] is None).
     """
     # Calculate the noise matrix based on the template
     noise = generate_noise_matrix(template, mode="mad")
@@ -123,24 +129,26 @@ def localize_ais(input_mat, params):
     Args:
         input_mat (numpy.ndarray): The input matrix as a NumPy array.
         params (dict): A dictionary containing the parameters for localization.
-        min_distance (int): The minimum distance between peaks.
-        threshold_rel (float): The relative threshold for peaks.
+            ais_detection (str): "dev" (peak closest to the expected peak time params["ms_cutout"][0]),
+                "time" (first peak) or "amp" (highest peak).
+            buffer_frames (int): Frames kept before the AIS peak.
     Returns:
         numpy.ndarray: The capped matrix containing the localized neurons.
         numpy.ndarray: The coordinates of the AIS peak.
     """
     peak_idx = params["ms_cutout"][0] * params["sampling_rate"] / 1000
-    peak_cutout = (
-        params["upsample"][2] * params["sampling_rate"] / 1000
-    )  # Cutout in ms before and after the peak
+    # Peaks on the spatial border are kept (neurons at the edge of the array), peaks at the
+    # first/last frames are not
     local_max = peak_local_max(
-        np.abs(input_mat), min_distance=3, threshold_rel=0.1, num_peaks=10
+        np.abs(input_mat), min_distance=3, threshold_rel=0.1, num_peaks=10, exclude_border=(0, 0, 3)
     )
+    if len(local_max) == 0:
+        raise ValueError("No peak found to localize the AIS")
 
     if (
         params["ais_detection"] == "dev"
     ):  # Search for the minimum deviation from expected peak time
-        ais = local_max[np.argmin(local_max[:, 2] - peak_idx), :]
+        ais = local_max[np.argmin(np.abs(local_max[:, 2] - peak_idx)), :]
     elif params["ais_detection"] == "time":  # Search for first peak
         ais = local_max[np.argmin(local_max[:, 2]), :]
     elif params["ais_detection"] == "amp":  # Search for highest peak
@@ -163,8 +171,6 @@ def generate_noise_matrix(template, mode="mad"):
     template along the third axis.
     Args:
         template (numpy.ndarray): The template as a NumPy array
-        noise (numpy.ndarray): The noise matrix to use. If not provided, the noise matrix
-                                 is generated based on the template.
         mode (str): The mode to use for noise calculation. Can be either 'mad' for median
                     absolute deviation or 'sd' for standard deviation.
     Returns:
@@ -175,6 +181,8 @@ def generate_noise_matrix(template, mode="mad"):
         noise = stats.median_abs_deviation(template, axis=2)
     elif mode == "sd":
         noise = np.std(template, axis=2)
+    else:
+        raise ValueError("Invalid mode. Must be 'mad' or 'sd'.")
 
     noise_matrix = noise[:, :, np.newaxis]  # For compatibility with the template shape
 
@@ -193,18 +201,15 @@ def threshold_template(template, noise, target_coor, params):
         numpy.ndarray: The boolean thresholded template.
     """
 
-    # mad_noise = generate_noise_matrix(template, mode="mad")
-    # sd_noise = generate_noise_matrix(template, mode="sd")
     if params["noise_threshold"] is not None:
         noise_th = template < (
             params["noise_threshold"] * noise[:, :, : template.shape[2]]
         )
-        # print("Noise thresholding")
     else:
-        noise_th = np.full_like(template, True)
+        noise_th = np.full_like(template, True, dtype=bool)
     abs_th = template < params["abs_threshold"]
     velocity_th = valid_latency_map(template, target_coor, params)
-    th_template = noise_th * abs_th * velocity_th  # * ((sd_noise / mad_noise) > 1)
+    th_template = noise_th & abs_th & velocity_th
     return th_template
 
 
@@ -218,27 +223,25 @@ def valid_latency_map(template, start, params):
     Returns:
         numpy.ndarray: The boolean matrix indicating the valid latency map.
     """
+    n_x, n_y, n_z = template.shape
+    x = np.arange(n_x)[:, None, None]
+    y = np.arange(n_y)[None, :, None]
+    z = np.arange(n_z)[None, None, :]
 
-    indices_array = np.indices(template.shape) * params["el_spacing"]  # convert to (um)
-    # Calculate the distance from the start point
+    # Distance from the start point in m, shape (x, y, 1)
     distances = (
         np.sqrt(
-            (indices_array[0] - start[0] * params["el_spacing"]) ** 2
-            + (indices_array[1] - start[1] * params["el_spacing"]) ** 2
+            ((x - start[0]) * params["el_spacing"]) ** 2
+            + ((y - start[1]) * params["el_spacing"]) ** 2
         )
         / 1000000
-    )  # distances in m
-    delay_mat = np.zeros(distances.shape)  # Initialize delay matrix
-    for z in range(distances.shape[2]):
-        # Calculate the delay matrix based on the distance from the start point in
-        # the z-axis
-        delay_mat[:, :, z] = (1 / params["sampling_rate"]) * np.abs((z - start[2]))
-
-    # Set the delay matrix for the starting point to non-zero
-    delay_mat[:, :, start[2]] = 1 / params["sampling_rate"]
+    )
+    # Delay from the start point in s, shape (1, 1, z); non-zero at the starting point
+    delay = np.abs(z - start[2]) / params["sampling_rate"]
+    delay[:, :, start[2]] = 1 / params["sampling_rate"]
 
     # Check which velocity is within the maximum velocity
-    passed = (distances / delay_mat) < params["max_velocity"]  # Boolean matrix
+    passed = (distances / delay) < params["max_velocity"]  # Boolean matrix
     return passed
 
 
@@ -252,14 +255,14 @@ def restore_sparse_template(template, spacing=(0.5, 0.5, 0.5)):
     """
 
     # Find where the actual template begins (first non-zero electrode)
-    x, y, z = np.nonzero(template)
+    x, y, _ = np.nonzero(template)
     # Restrict template to the smallest bounding box
-    true_template = template[np.min(x) :, np.min(x) :, :]
+    true_template = template[np.min(x) :, np.min(y) :, :]
     # Remove empty electrodes (due to sparseness)
     del_x = np.delete(
-        true_template, np.nonzero(np.sum(sel_test, axis=(0, 2)) == 0), axis=1
+        true_template, np.nonzero(np.sum(true_template, axis=(0, 2)) == 0), axis=1
     )
-    del_y = np.delete(del_x, np.nonzero(np.sum(sel_test, axis=(1, 2)) == 0), axis=0)
+    del_y = np.delete(del_x, np.nonzero(np.sum(del_x, axis=(1, 2)) == 0), axis=0)
     # Interpolate the template to fill in the gaps
     interp_tmp = interpolate_template(del_y, spacing)
     return interp_tmp
@@ -283,9 +286,7 @@ def interp_max(x, spacing):
     return interp_max
 
 
-def interpolate_template(
-    template, spacing=[1, 1, 0.2], template_path=[], overwrite=False
-):
+def interpolate_template(template, spacing=(1, 1, 0.2), template_path=None, overwrite=False):
     """Generate an interpolated template based on the input template and spacing.
     Args:
         template (numpy.ndarray): The template as a NumPy array.
@@ -326,8 +327,8 @@ def interpolate_template(
     return interp_template
 
 
-def cone(matrix_shape, r, apex=[]):
-    if not apex:
+def cone(matrix_shape, r, apex=None):
+    if apex is None:
         apex = np.empty(3)
         apex[0], apex[1], apex[2] = (
             np.floor(matrix_shape[0] / 2),
@@ -376,20 +377,6 @@ def generate_dilation_structure(max_t, params):
     return full_structure
 
 
-def iterative_dilation(template, params):
-
-    structure = generate_dilation_structure(r_dilation)
-    m_init = template < init_th  # Detection of initial seeds/definitive peaks
-    mask = template < min_th  # Mask indicating potential peak locations
-    dilated = nd.binary_dilation(m_init, structure=structure, iterations=0, mask=mask)
-    # filtered = nd.median_filter(dilated,size=filter_size)
-    # filtered = nd.median_filter(dilated,footprint=ball(1))
-    if filter_footprint is not None:
-        dilated = nd.median_filter(dilated, footprint=filter_footprint)
-
-    return dilated
-
-
 def skeletonize(
     input_matrix,
     scale=2,
@@ -397,11 +384,41 @@ def skeletonize(
     pdrf_exponent=4,
     pdrf_scale=10000,
     dust_threshold=0,
-    anisotropy=(17.5, 17.5, 50.0),
-    tick_threshold=10,
+    anisotropy=(1, 1, 1),
+    tick_threshold=None,
     n_jobs=16,
-    ais=[],
+    ais=None,
 ):
+    """Skeletonize a thresholded (boolean) template with kimimaro (TEASAR).
+
+    Args:
+        input_matrix (numpy.ndarray): Boolean template (x, y, t).
+        scale, const, pdrf_exponent, pdrf_scale: TEASAR parameters; `const` is in physical units,
+            i.e. voxels scaled by `anisotropy`.
+        dust_threshold (int): Skip connected components with fewer voxels.
+        anisotropy (tuple): Physical size of a voxel along (x, y, t). With the default (1, 1, 1),
+            TEASAR parameters are in voxels.
+        tick_threshold: Has no effect here; apply it with kimimaro.postprocess().
+        n_jobs (int): Number of parallel processes.
+        ais (array-like, optional): AIS voxel (x, y, t), e.g. from `localize_ais`. If it lies inside the
+            thresholded template, tracing is started from it (kimimaro extra_targets_before).
+
+    Returns:
+        dict: {label: osteoid.Skeleton} with vertices in voxel coordinates.
+    """
+    if tick_threshold is not None:
+        warnings.warn(
+            "tick_threshold has no effect in skeletonize(); apply it with kimimaro.postprocess().",
+            stacklevel=2,
+        )
+
+    extra_targets_before = []
+    if ais is not None and len(ais) >= 3:
+        ais_voxel = tuple(int(a) for a in ais[:3])
+        inside = all(0 <= a < s for a, s in zip(ais_voxel, input_matrix.shape))
+        if inside and input_matrix[ais_voxel]:
+            extra_targets_before = [ais_voxel]
+
     skels = kimimaro.skeletonize(
         input_matrix,
         teasar_params={
@@ -414,12 +431,14 @@ def skeletonize(
             "soma_invalidation_const": 30,  # physical units
             "soma_invalidation_scale": 2,
         },
+        anisotropy=anisotropy,
         dust_threshold=dust_threshold,
         parallel=n_jobs,
+        extra_targets_before=extra_targets_before,
     )
-    # extra_targets_before=ais
 
-    return skels
+    # Downstream code works in voxel coordinates
+    return {label: skel.voxel_space() for label, skel in skels.items()}
 
 
 def perform_path_qc(
@@ -428,26 +447,34 @@ def perform_path_qc(
     window_size=7,
     max_duplicate_ratio=0.5,
     min_r2=0.9,
-    vel_range=[0.4, 1],
+    vel_range=(0.4, 1),
     min_length=10,
 ):
+    """Splits paths at changes of their temporal direction and keeps paths with a linear
+    distance-time relationship (R2 > min_r2) and a velocity within vel_range [m/s]. Paths too
+    short to fit a velocity (<= 3 points) are kept.
+
+    Returns:
+        qc_list (list): Paths (in um, float32 as required by kimimaro) that passed the QC.
+        r2s, vels, lengths (list): R2 (NaN for short paths), velocity and number of points of each kept path.
+    """
+    if len(paths) == 0:
+        return [], [], [], []
 
     scaled_paths = ut.convert_coor_scale(paths, params, scale="um")
     good_path_list, r2s, vels, lengths = [], [], [], []
-    path_list = []
     for path in scaled_paths:
         if len(path) > window_size:
-            path, inflection_points = split_path(
+            path, _ = split_path(
                 path, window_size=window_size, max_duplicate_ratio=max_duplicate_ratio
             )
             path = [p for p in path if len(p) > min_length]
         if len(path) < 1:
             continue
-        if type(path) is not list:
+        if not isinstance(path, list):
             path = [path]
         good_path_list = good_path_list + path
-    # good_path_list.append(path)
-    # print(good_path_list)
+
     for path in good_path_list:
         if path.shape[0] > 3:
             vel, r2 = calculate_path_velocity(path, params)
@@ -457,16 +484,16 @@ def perform_path_qc(
         vels.append(vel)
         lengths.append(len(path))
 
-    good_vel = np.where(
-        (np.array(r2s) > min_r2)
-        & (np.array(vels) < vel_range[1])
-        & (np.array(vels) > vel_range[0])
-    )
-    good_vel = good_vel | np.isnan(r2)
-    qc_list = [good_path_list[x] for x in good_vel[0]]
-    r2s = [r2s[x] for x in good_vel[0]]
-    vels = [vels[x] for x in good_vel[0]]
-    lengths = [lengths[x] for x in good_vel[0]]
+    r2s, vels = np.array(r2s, dtype=float), np.array(vels, dtype=float)
+    good_vel = (
+        (r2s > min_r2) & (vels < vel_range[1]) & (vels > vel_range[0])
+    ) | np.isnan(r2s)
+    keep_idx = np.flatnonzero(good_vel)
+
+    qc_list = [good_path_list[x].astype(np.float32) for x in keep_idx]
+    r2s = [r2s[x] for x in keep_idx]
+    vels = [vels[x] for x in keep_idx]
+    lengths = [lengths[x] for x in keep_idx]
     return qc_list, r2s, vels, lengths
 
 
@@ -478,10 +505,9 @@ def split_path(path, window_size=7, max_duplicate_ratio=0.3):
     inflection_points = np.where(np.diff(np.sign(gradient)))[0]
     inflection_points = (inflection_points + np.floor(window_size / 2)).astype("int")
     inflection_points = np.delete(
-        inflection_points, [np.where(np.abs(np.diff(inflection_points)) < 2)]
+        inflection_points, np.flatnonzero(np.abs(np.diff(inflection_points)) < 2)
     )
     split_points = [0] + list(inflection_points) + [path.shape[0]]
-    # print(split_points)
     split_paths = [
         path[split_points[s] : split_points[s + 1], :]
         for s in range(len(split_points) - 1)
@@ -494,40 +520,25 @@ def split_path(path, window_size=7, max_duplicate_ratio=0.3):
 
 
 def branches_from_paths(skeleton):
-    branch_points = skeleton.branches()
-    path_list = skeleton.paths()
-    all_branches = []
-    for path in path_list:
-        path_idx, _ = np.where(
-            (path[:, None] == skeleton.vertices[branch_points]).all(axis=2)
-        )
-        branch_idx = []
-        for p in path_idx:
-            # check_idx = range(p-1,p+2)
-            dists = pdist(path[p - 1 : p + 2, :])
-            branch_idx = [0]
-            if dists[0] > dists[2]:
-                branch_idx.append(p)
-            else:
-                branch_idx.append(p + 1)
-        if len(branch_idx) > 0:
-            branch_idx.append(path.shape[0])
-            new_branches = [
-                path[branch_idx[x] : branch_idx[x + 1], :]
-                for x in range(len(branch_idx) - 1)
-            ]
-            all_branches = all_branches + new_branches
+    """Splits a skeleton into its branches, i.e. the paths between adjacent critical points
+    (terminals and branch points). Each branch includes both of its end points.
 
-    unique_branches = []
-    for arr in all_branches:
-        # Check if the array is not already in unique_arrays
-        branch_list = []
-        if not any(np.array_equal(arr, unique_arr) for unique_arr in unique_branches):
-            # unique_branches.append(arr)
-            branch_list.append(arr)
-        unique_branches = unique_branches + branch_list
-        unique_branches = [x for x in unique_branches if x.shape[0] > 1]
-    return unique_branches
+    Args:
+        skeleton (osteoid.Skeleton): Skeleton to split.
+
+    Returns:
+        list of np.ndarray: Vertex coordinates of each branch (with more than one vertex).
+    """
+    return [branch for branch in skeleton.interjoint_paths() if branch.shape[0] > 1]
+
+
+def paths_to_skeleton(paths):
+    """Merges paths (arrays of vertex coordinates) into one skeleton. Vertices are cast to float32,
+    which kimimaro.postprocess/join_close_components require (e.g. after average_smoothing, which
+    returns float64 vertices)."""
+    return osteoid.Skeleton.simple_merge(
+        [osteoid.Skeleton.from_path(np.asarray(path, dtype=np.float32)) for path in paths]
+    )
 
 
 def remove_circulating_paths(path_list, max_duplicate_ratio=0.3):
@@ -545,14 +556,11 @@ def remove_circulating_paths(path_list, max_duplicate_ratio=0.3):
     clean_path_list = [
         path_list[i] for i in range(len(path_list)) if i not in indices_to_remove
     ]
-    # print(len(path_list) - len(clean_path_list))
     return clean_path_list
 
 
 def calculate_path_velocity(path, params):
     path_diff = np.diff(path, axis=0)
-    # print(path_diff)
-    # print(path_diff.shape)
     dist = np.sqrt(path_diff[:, 0] ** 2 + path_diff[:, 1] ** 2) / 1000
     time = (np.cumsum(np.abs(path_diff[:, 2])) / params["sampling_rate"]) * 1000
     regressor = LinearRegression(fit_intercept=True)
@@ -565,9 +573,6 @@ def calculate_path_velocity(path, params):
 
 
 def path_to_vertices(path_list, params, unscale=True):
-    # if unscale:
-    #     path_list = unscale_path_coordinates(path_list, params)
-
     vertices = np.concatenate(path_list)
     sorted_indices = np.argsort(vertices[:, 2])
     sorted_vertices = vertices[sorted_indices, :]

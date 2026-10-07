@@ -31,4 +31,4 @@ print(f"The save path corresponds to the pattern:\n {save_path}\n")
 save_flag = input("Do you want to continue and save the files? (y/n) ")
 
 if save_flag != "y":
-    exit
+    sys.exit()
